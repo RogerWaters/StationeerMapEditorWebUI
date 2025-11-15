@@ -1,5 +1,51 @@
 import { WORLD_HEIGHT_LIMIT } from "../config/constants.js";
 
+const HEIGHTMAP_META = {
+  generic: {
+    labelPrefix: {
+      twoD: "2D Heightmap",
+      threeD: "3D Heightmap",
+    },
+    icon: "wxi-pencil",
+  },
+  noise: {
+    labelPrefix: "Noise Heightmap",
+    icon: "item fa-solid fa-wave-square",
+  },
+  upload: {
+    labelPrefix: "Upload Heightmap",
+    icon: "wxi-download",
+  },
+  paint: {
+    labelPrefix: "Paint Heightmap",
+    icon: "wxi-pencil",
+  },
+  combine: {
+    labelPrefix: "Combine Heightmap",
+    icon: "wxi-columns",
+  },
+};
+
+export const NOISE_HEIGHTMAP_DEFAULTS = {
+  noiseType: "opensimplex2",
+  seed: 1337,
+  frequency: 0.02,
+  offsetX: 0,
+  offsetY: 0,
+  fractalType: "fbm",
+  octaves: 5,
+  lacunarity: 2,
+  gain: 0.5,
+  weightedStrength: 0.0,
+  pingPongStrength: 2.0,
+  cellularDistanceFunction: "euclidean",
+  cellularReturnType: "distance2",
+  cellularJitter: 1.0,
+  domainWarpType: "opensimplex2",
+  domainWarpAmplitude: 1.0,
+  domainWarpFrequency: 0.5,
+};
+
 export const projectState = {
   loaded: false,
   name: "Kein Projekt",
@@ -75,19 +121,37 @@ function heightmapLabel(bucket) {
   return bucket === "twoD" ? "2D Heightmap" : "3D Heightmap";
 }
 
-export function createHeightmap(bucket) {
+export function createHeightmap(bucket, options = {}) {
   if (!projectState.loaded) {
     throw new Error("Projekt nicht geladen");
   }
   const key = bucket === "threeD" ? "threeD" : "twoD";
   const counter = projectState.counters[key]++;
   const nodeId = `${key}-hm-${counter}`;
+  const mapType = options.mapType || "generic";
+  const meta = HEIGHTMAP_META[mapType] || HEIGHTMAP_META.generic;
+  const explicitName = typeof options.name === "string" ? options.name.trim() : "";
+  const prefix =
+    typeof meta.labelPrefix === "string"
+      ? meta.labelPrefix
+      : meta.labelPrefix?.[key] || HEIGHTMAP_META.generic.labelPrefix[key];
+  const label = explicitName || `${prefix} ${counter}`;
   const node = {
     id: nodeId,
-    value: `${heightmapLabel(key)} ${counter}`,
+    value: label,
+    mapType,
+    icon: options.icon || meta.icon,
+    settings: buildInitialSettings(mapType),
   };
   projectState.heightmaps[key].push(node);
   return node;
+}
+
+function buildInitialSettings(mapType) {
+  if (mapType === "noise") {
+    return { ...NOISE_HEIGHTMAP_DEFAULTS };
+  }
+  return {};
 }
 
 export function buildHeightmapBranch(type) {
@@ -95,6 +159,9 @@ export function buildHeightmapBranch(type) {
     {
       id: `${type}-add`,
       value: type === "twoD" ? "+ Neue 2D Heightmap" : "+ Neue 3D Heightmap",
+      icon: "wxi-plus",
+      action: true,
+      $css: "tree-action-node",
     },
   ];
   const pool = projectState.heightmaps[type];
@@ -119,13 +186,43 @@ export function buildNavigationTree() {
       id: "twoD-root",
       value: "2D Heightmaps",
       open: true,
+      icon: "wxi-folder",
       data: buildHeightmapBranch("twoD"),
     },
     {
       id: "threeD-root",
       value: "3D Heightmaps",
       open: true,
+      icon: "wxi-folder",
       data: buildHeightmapBranch("threeD"),
     },
   ];
+}
+
+export function getHeightmapById(nodeId) {
+  for (const bucket of ["twoD", "threeD"]) {
+    const node = projectState.heightmaps[bucket].find((hm) => hm.id === nodeId);
+    if (node) {
+      return { bucket, node };
+    }
+  }
+  return null;
+}
+
+export function updateHeightmapSettings(nodeId, updates) {
+  const target = getHeightmapById(nodeId);
+  if (!target) return null;
+  target.node.settings = {
+    ...target.node.settings,
+    ...updates,
+  };
+  if (updates.displayName !== undefined) {
+    const trimmed = (updates.displayName || "").trim();
+    target.node.value = trimmed || target.node.value;
+  }
+  return target.node.settings;
+}
+
+if (typeof window !== "undefined") {
+  window.projectState = projectState;
 }

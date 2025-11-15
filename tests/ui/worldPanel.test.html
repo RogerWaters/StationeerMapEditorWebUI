@@ -52,6 +52,19 @@
               expect(worldForm).to.not.equal(undefined);
               expect(worldForm.isVisible && worldForm.isVisible()).to.equal(true);
             });
+
+            it("updated Noise Heightmap names appear in tree", async () => {
+              harness.createWorld({ worldName: "NoiseTest", worldSize: 512, worldHeight: 256 });
+              const nodeId = harness.createHeightmap({ bucket: "twoD", mapType: "noise" });
+              await harness.selectNode(nodeId);
+              const nameFieldId = `noiseField-${nodeId}-displayName`;
+              const nameField = webix.$$(nameFieldId);
+              expect(nameField).to.not.equal(undefined);
+              nameField.setValue("My Noise Layer");
+              await webix.delay(() => {}, 100);
+              const tree = webix.$$("navigation");
+              expect(tree.getItem(nodeId).value).to.equal("My Noise Layer");
+            });
           });
 
           mocha.run((failures) => {

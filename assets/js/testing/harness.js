@@ -1,4 +1,4 @@
-export function registerHarness({ onCreateWorld, onSelectNode, getActivePanelId }) {
+export function registerHarness({ onCreateWorld, onSelectNode, getActivePanelId, createHeightmapNode }) {
   window.AppHarness = {
     createWorld: (payload) => {
       if (typeof onCreateWorld === "function") {
@@ -12,6 +12,12 @@ export function registerHarness({ onCreateWorld, onSelectNode, getActivePanelId 
     getActivePanelId: () => {
       if (typeof getActivePanelId === "function") {
         return getActivePanelId();
+      }
+      return null;
+    },
+    createHeightmap: (config) => {
+      if (typeof createHeightmapNode === "function") {
+        return createHeightmapNode(config || {});
       }
       return null;
     },
