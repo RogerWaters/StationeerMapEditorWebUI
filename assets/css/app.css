@@ -53,6 +53,11 @@ body {
   color: darkgrey;
 }
 
+.combine-child {
+  color: #e5e7eb;
+  margin-bottom: 6px;
+}
+
 body.testing #app-root {
   margin-top: 16px;
   height: calc(100vh - 32px);

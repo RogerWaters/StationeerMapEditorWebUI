@@ -2,6 +2,7 @@ import { defaultPanel } from "./panels/defaultPanel.js";
 import { ensureTemplatePanel, getPanelTemplate } from "./panels/templates.js";
 import { createWorldPanel, syncWorldPanelValues } from "./panels/worldPanel.js";
 import { ensureNoiseHeightmapPanel, syncNoiseHeightmapPanel } from "./panels/noiseHeightmapPanel.js";
+import { ensureCombineHeightmapPanel, syncCombineHeightmapPanel } from "./panels/combineHeightmapPanel.js";
 import { registerHarness } from "./testing/harness.js";
 import { openNewWorldDialog } from "./ui/newWorldDialog.js";
 import {
@@ -16,6 +17,7 @@ import {
 let saveButton;
 let heightmapAddMenu;
 let pendingAddBucket = null;
+let pendingParentId = null;
 
 export async function initApp(rootId = "app-root") {
   const container = document.getElementById(rootId) || document.body;
@@ -29,8 +31,8 @@ export async function initApp(rootId = "app-root") {
     onCreateWorld: handleCreateWorldFromPayload,
     onSelectNode: (nodeId) => selectNode(nodeId),
     getActivePanelId: () => getActivePanelId(),
-    createHeightmapNode: ({ bucket, mapType, name }) => {
-      const node = createHeightmap(bucket, { mapType, name });
+    createHeightmapNode: ({ bucket, mapType, name, parentId }) => {
+      const node = createHeightmap(bucket, { mapType, name, parentId });
       refreshNavigationTree(false);
       return node.id;
     },
@@ -140,7 +142,7 @@ function refreshNavigationTree(preserveSelection = true) {
 }
 
 function handleTreeSelection(id) {
-  if (id === "twoD-add" || id === "threeD-add") {
+  if (id === "twoD-add" || id === "threeD-add" || id.startsWith("child-add::")) {
     if (!projectState.loaded) {
       webix.message({ type: "error", text: "Bitte zuerst ein Projekt erstellen oder laden." });
       return;
@@ -162,6 +164,12 @@ function updateWorkspace(nodeId) {
   if (heightmapEntry && heightmapEntry.node.mapType === "noise") {
     const panelId = ensureNoiseHeightmapPanel(heightmapEntry.node);
     syncNoiseHeightmapPanel(heightmapEntry.node);
+    workspace.setValue(panelId);
+    return;
+  }
+  if (heightmapEntry && heightmapEntry.node.mapType === "combine") {
+    const panelId = ensureCombineHeightmapPanel(heightmapEntry.node);
+    syncCombineHeightmapPanel(heightmapEntry.node);
     workspace.setValue(panelId);
     return;
   }
@@ -238,32 +246,34 @@ function selectNode(nodeId) {
 }
 
 function handleTreeItemClick(id, e) {
-  if (id === "twoD-add") {
-    showHeightmapAddMenu("twoD", e);
+  if (id === "twoD-add" || id === "threeD-add") {
+    const bucket = id.startsWith("threeD") ? "threeD" : "twoD";
+    showHeightmapAddMenu(bucket, e);
     return false;
   }
-  if (id === "threeD-add") {
-    const node = createHeightmap("threeD");
-    refreshNavigationTree(false);
-    selectNode(node.id);
+  if (id.startsWith("child-add::")) {
+    const parentId = id.split("::")[1];
+    const parentEntry = getHeightmapById(parentId);
+    if (!parentEntry) {
+      return false;
+    }
+    showHeightmapAddMenu(parentEntry.bucket, e, parentId);
     return false;
   }
   return true;
 }
 
-function getAddMenuData(bucket) {
-  if (bucket === "twoD") {
-    return [
-      { id: "noise", value: "Noise Heightmap" },
-      { id: "upload", value: "Upload Heightmap" },
-      { id: "paint", value: "Paint Heightmap" },
-      { id: "combine", value: "Combine Heightmap" },
-    ];
-  }
-  return [
+function getAddMenuData(bucket, parentId) {
+  const base = [
     { id: "noise", value: "Noise Heightmap" },
     { id: "upload", value: "Upload Heightmap" },
+    { id: "paint", value: "Paint Heightmap" },
+    { id: "combine", value: "Combine Heightmap" },
   ];
+  if (bucket === "threeD") {
+    return base.filter((option) => option.id !== "combine");
+  }
+  return base;
 }
 
 function ensureHeightmapAddMenu() {
@@ -283,28 +293,31 @@ function ensureHeightmapAddMenu() {
   return heightmapAddMenu;
 }
 
-function showHeightmapAddMenu(bucket, event) {
+function showHeightmapAddMenu(bucket, event, parentId = null) {
   if (!projectState.loaded) {
     webix.message({ type: "error", text: "Bitte zuerst ein Projekt erstellen oder laden." });
     return;
   }
   pendingAddBucket = bucket;
+  pendingParentId = parentId;
   const menu = ensureHeightmapAddMenu();
   menu.clearAll();
-  menu.parse(getAddMenuData(bucket));
+  menu.parse(getAddMenuData(bucket, parentId));
   menu.show(event.target);
 }
 
 function handleHeightmapCreation(mapType) {
   const bucket = pendingAddBucket;
+  const parentId = pendingParentId;
   if (!bucket) return;
   ensureHeightmapAddMenu().hide();
   pendingAddBucket = null;
+  pendingParentId = null;
   if (!projectState.loaded) {
     webix.message({ type: "error", text: "Bitte zuerst ein Projekt erstellen oder laden." });
     return;
   }
-  const node = createHeightmap(bucket, { mapType });
+  const node = createHeightmap(bucket, { mapType, parentId });
   refreshNavigationTree(false);
   selectNode(node.id);
 }

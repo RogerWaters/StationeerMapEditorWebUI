@@ -46,6 +46,21 @@ export const NOISE_HEIGHTMAP_DEFAULTS = {
   domainWarpFrequency: 0.5,
 };
 
+export const COMBINE_HEIGHTMAP_DEFAULTS = {
+  method: "add",
+  normalizeResult: false,
+  childA: {
+    normalize: false,
+    offset: 0,
+    factor: 1,
+  },
+  childB: {
+    normalize: false,
+    offset: 0,
+    factor: 1,
+  },
+};
+
 export const projectState = {
   loaded: false,
   name: "Kein Projekt",
@@ -142,8 +157,16 @@ export function createHeightmap(bucket, options = {}) {
     mapType,
     icon: options.icon || meta.icon,
     settings: buildInitialSettings(mapType),
+    parentId: options.parentId || null,
+    children: [],
   };
   projectState.heightmaps[key].push(node);
+  if (node.parentId) {
+    const parentEntry = getHeightmapById(node.parentId);
+    if (parentEntry && parentEntry.node.children) {
+      parentEntry.node.children.push(node.id);
+    }
+  }
   return node;
 }
 
@@ -151,21 +174,45 @@ function buildInitialSettings(mapType) {
   if (mapType === "noise") {
     return { ...NOISE_HEIGHTMAP_DEFAULTS };
   }
+  if (mapType === "combine") {
+    return { ...COMBINE_HEIGHTMAP_DEFAULTS };
+  }
   return {};
 }
 
-export function buildHeightmapBranch(type) {
-  const nodes = [
-    {
+export function buildHeightmapBranch(type, parentId = null) {
+  const nodes = [];
+  if (!parentId) {
+    nodes.push({
       id: `${type}-add`,
       value: type === "twoD" ? "+ Neue 2D Heightmap" : "+ Neue 3D Heightmap",
       icon: "wxi-plus",
       action: true,
       $css: "tree-action-node",
-    },
-  ];
-  const pool = projectState.heightmaps[type];
-  nodes.push(...pool);
+    });
+  }
+  const pool = projectState.heightmaps[type].filter((hm) => hm.parentId === parentId);
+  pool.forEach((hm) => {
+    const item = {
+      id: hm.id,
+      value: hm.value,
+      icon: hm.icon,
+    };
+    if (hm.mapType === "combine") {
+      const children = buildHeightmapBranch(type, hm.id);
+      if ((hm.children || []).length < 2) {
+        children.unshift({
+          id: `child-add::${hm.id}`,
+          value: "+ Neue Heightmap",
+          icon: "wxi-plus",
+          action: true,
+          $css: "tree-action-node",
+        });
+      }
+      item.data = children;
+    }
+    nodes.push(item);
+  });
   return nodes;
 }
 
