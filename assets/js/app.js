@@ -3,6 +3,7 @@ import { ensureTemplatePanel, getPanelTemplate } from "./panels/templates.js";
 import { createWorldPanel, syncWorldPanelValues } from "./panels/worldPanel.js";
 import { ensureNoiseHeightmapPanel, syncNoiseHeightmapPanel } from "./panels/noiseHeightmapPanel.js";
 import { ensureCombineHeightmapPanel, syncCombineHeightmapPanel } from "./panels/combineHeightmapPanel.js";
+import { ensureUploadHeightmapPanel, syncUploadHeightmapPanel } from "./panels/uploadHeightmapPanel.js";
 import { registerHarness } from "./testing/harness.js";
 import { openNewWorldDialog } from "./ui/newWorldDialog.js";
 import {
@@ -164,6 +165,12 @@ function updateWorkspace(nodeId) {
   if (heightmapEntry && heightmapEntry.node.mapType === "noise") {
     const panelId = ensureNoiseHeightmapPanel(heightmapEntry.node);
     syncNoiseHeightmapPanel(heightmapEntry.node);
+    workspace.setValue(panelId);
+    return;
+  }
+  if (heightmapEntry && heightmapEntry.node.mapType === "upload") {
+    const panelId = ensureUploadHeightmapPanel(heightmapEntry.node);
+    syncUploadHeightmapPanel(heightmapEntry.node);
     workspace.setValue(panelId);
     return;
   }

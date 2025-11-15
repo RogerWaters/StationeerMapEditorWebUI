@@ -22,6 +22,8 @@ function renderJob(tree, width, height) {
       return renderNoise(tree.settings || {}, width, height);
     case "combine":
       return renderCombine(tree, width, height);
+    case "upload":
+      return renderUpload(tree, width, height);
     default:
       throw new Error(`Unbekannter Job-Typ: ${tree.type}`);
   }
@@ -57,6 +59,16 @@ function renderCombine(tree, width, height) {
     normalizeArray(output);
   }
   return output;
+}
+
+function renderUpload(tree, width, height) {
+  if (!tree.source || !tree.source.pixels) {
+    throw new Error("Kein Bild vorhanden.");
+  }
+  const mapping = (tree.settings?.mapping || "contain").toLowerCase();
+  const scaled = resampleSource(tree.source, width, height, mapping);
+  applyUploadAdjustments(scaled, tree.settings || {});
+  return scaled;
 }
 
 function configureNoise(settings) {
@@ -170,4 +182,72 @@ function floatsToBuffer(data, width, height) {
     buffer[ptr++] = 255;
   }
   return buffer;
+}
+
+function resampleSource(source, width, height, mapping) {
+  const srcWidth = parseInt(source.width, 10) || 1;
+  const srcHeight = parseInt(source.height, 10) || 1;
+  const srcPixels = source.pixels || [];
+  const target = new Float32Array(width * height);
+  const scaleX = width / srcWidth;
+  const scaleY = height / srcHeight;
+  const scale =
+    mapping === "cover"
+      ? Math.max(scaleX || 1, scaleY || 1)
+      : Math.min(scaleX || 1, scaleY || 1);
+  const scaledWidth = srcWidth * scale;
+  const scaledHeight = srcHeight * scale;
+  const offsetX = (width - scaledWidth) * 0.5;
+  const offsetY = (height - scaledHeight) * 0.5;
+  let ptr = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const srcX = (x - offsetX) / scale;
+      const srcY = (y - offsetY) / scale;
+      let value = 0;
+      if (mapping === "cover") {
+        value = sampleNearest(srcPixels, srcWidth, srcHeight, clamp(srcX, 0, srcWidth - 1), clamp(srcY, 0, srcHeight - 1));
+      } else {
+        if (srcX >= 0 && srcX < srcWidth && srcY >= 0 && srcY < srcHeight) {
+          value = sampleNearest(srcPixels, srcWidth, srcHeight, srcX, srcY);
+        } else {
+          value = 0;
+        }
+      }
+      target[ptr++] = value;
+    }
+  }
+  return target;
+}
+
+function sampleNearest(pixels, width, height, x, y) {
+  const ix = Math.max(0, Math.min(width - 1, Math.round(x)));
+  const iy = Math.max(0, Math.min(height - 1, Math.round(y)));
+  return pixels[iy * width + ix] || 0;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function applyUploadAdjustments(array, settings) {
+  if (settings.normalize) {
+    normalizeArray(array);
+  } else {
+    const min = parseFloat(settings.minValue);
+    const max = parseFloat(settings.maxValue);
+    const minValue = Number.isFinite(min) ? min : 0;
+    const maxValue = Number.isFinite(max) ? max : 1;
+    const span = maxValue - minValue;
+    const range = span === 0 ? 1 : span;
+    for (let i = 0; i < array.length; i += 1) {
+      const normalized = (array[i] - minValue) / range;
+      array[i] = Math.max(0, Math.min(1, normalized));
+    }
+  }
+  if (settings.invert) {
+    for (let i = 0; i < array.length; i += 1) {
+      array[i] = 1 - array[i];
+    }
+  }
 }

@@ -1,4 +1,9 @@
-import { getHeightmapById, NOISE_HEIGHTMAP_DEFAULTS, COMBINE_HEIGHTMAP_DEFAULTS } from "../state/projectState.js";
+import {
+  getHeightmapById,
+  NOISE_HEIGHTMAP_DEFAULTS,
+  COMBINE_HEIGHTMAP_DEFAULTS,
+  UPLOAD_HEIGHTMAP_DEFAULTS,
+} from "../state/projectState.js";
 
 export function buildPreviewTree(nodeId) {
   const entry = getHeightmapById(nodeId);
@@ -17,6 +22,8 @@ export function buildPreviewTree(nodeId) {
       };
     case "combine":
       return buildCombineJob(node);
+    case "upload":
+      return buildUploadJob(node);
     default:
       return { ok: false, error: `Preview für ${node.mapType} ist noch nicht implementiert.` };
   }
@@ -42,4 +49,36 @@ function buildCombineJob(node) {
       childB: childBJob.job,
     },
   };
+}
+
+function buildUploadJob(node) {
+  const settings = { ...UPLOAD_HEIGHTMAP_DEFAULTS, ...(node.settings || {}) };
+  const source = settings.sourceImage;
+  if (!source || !source.pixels || !source.width || !source.height) {
+    return { ok: false, error: "Bitte zuerst ein Bild hochladen." };
+  }
+  return {
+    ok: true,
+    job: {
+      type: "upload",
+      settings: {
+        mapping: settings.mapping || "contain",
+        minValue: coerce(settings.minValue, 0),
+        maxValue: coerce(settings.maxValue, 1),
+        normalize: !!settings.normalize,
+        invert: !!settings.invert,
+      },
+      source: {
+        name: source.name || "Upload",
+        width: source.width,
+        height: source.height,
+        pixels: source.pixels,
+      },
+    },
+  };
+}
+
+function coerce(value, fallback) {
+  const num = parseFloat(value);
+  return Number.isFinite(num) ? num : fallback;
 }

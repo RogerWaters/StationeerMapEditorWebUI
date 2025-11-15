@@ -61,6 +61,16 @@ export const COMBINE_HEIGHTMAP_DEFAULTS = {
   },
 };
 
+export const UPLOAD_HEIGHTMAP_DEFAULTS = {
+  displayName: "",
+  mapping: "contain",
+  minValue: 0,
+  maxValue: 1,
+  normalize: false,
+  invert: false,
+  sourceImage: null,
+};
+
 export const projectState = {
   loaded: false,
   name: "Kein Projekt",
@@ -176,6 +186,9 @@ function buildInitialSettings(mapType) {
   }
   if (mapType === "combine") {
     return { ...COMBINE_HEIGHTMAP_DEFAULTS };
+  }
+  if (mapType === "upload") {
+    return { ...UPLOAD_HEIGHTMAP_DEFAULTS };
   }
   return {};
 }
