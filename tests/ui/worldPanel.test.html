@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>World Panel UI Tests</title>
+    <link rel="stylesheet" href="../../vendor/mocha.css" />
+    <link rel="stylesheet" href="../../vendor/webix.css" />
+    <link rel="stylesheet" href="../../assets/css/app.css" />
+  </head>
+  <body class="testing">
+    <div id="mocha"></div>
+    <div id="app-root"></div>
+    <script src="../../vendor/mocha.js"></script>
+    <script src="../../vendor/chai.js"></script>
+    <script src="../../vendor/webix.js"></script>
+    <script type="module">
+      const { expect } = chai;
+      mocha.setup("bdd");
+      window.addEventListener("error", (event) => {
+        console.error("[window error]", event.message, event.filename, event.lineno);
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        console.error("[unhandled rejection]", event.reason);
+      });
+
+      async function loadApp() {
+        await import("../../assets/js/app.js");
+      }
+
+      function waitForHarness() {
+        return new Promise((resolve) => {
+          const check = () => {
+            if (window.AppHarness) {
+              resolve(window.AppHarness);
+            } else {
+              setTimeout(check, 30);
+            }
+          };
+          check();
+        });
+      }
+
+      function run() {
+        loadApp().then(waitForHarness).then((harness) => {
+          describe("World Panel Integration", () => {
+            it("zeigt das World Panel nach Auswahl des Knotens", async () => {
+              harness.createWorld({ worldName: "Test Harness", worldSize: 4096, worldHeight: 512 });
+              await harness.selectNode("world");
+              const activeId = harness.getActivePanelId();
+              expect(activeId).to.equal("panel-world");
+              const worldForm = webix.$$("worldSettingsForm");
+              expect(worldForm).to.not.equal(undefined);
+              expect(worldForm.isVisible && worldForm.isVisible()).to.equal(true);
+            });
+          });
+
+          mocha.run((failures) => {
+            const status = failures ? 1 : 0;
+            document.body.setAttribute("data-test-result", status);
+            console.log(`TEST_RESULT:${status}`);
+          });
+        });
+      }
+
+      if (document.readyState === "complete" || document.readyState === "interactive") {
+        run();
+      } else {
+        window.addEventListener("DOMContentLoaded", run);
+      }
+    </script>
+  </body>
+</html>
