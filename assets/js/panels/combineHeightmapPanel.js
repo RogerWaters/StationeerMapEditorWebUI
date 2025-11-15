@@ -62,7 +62,7 @@ export function ensureCombineHeightmapPanel(node) {
         gravity: 1,
         rows: [
           {
-            template: `<div style='padding:24px 24px 4px'><div class='section-title'>Preview</div><div class='notes'>Simulation folgt (512 x 512)</div></div>`,
+            template: `<div style='padding:24px 24px 4px'><div class='section-title'>Preview</div><div class='notes'>Auflösung <span id='combinePreviewMeta-${node.id}'>-</span></div></div>`,
             borderless: true,
             autoheight: true,
           },
@@ -73,7 +73,8 @@ export function ensureCombineHeightmapPanel(node) {
             gravity: 1,
             template: `
               <div class='noise-preview-wrapper combine-preview'>
-                <div class='combine-preview-placeholder'>Preview folgt</div>
+                <div id='combinePreviewStatus-${node.id}' class='noise-preview-status'>Noch keine Vorschau</div>
+                <img id='combinePreviewImg-${node.id}' class='noise-preview-image' alt='Combine preview' />
               </div>
             `,
           },
@@ -97,6 +98,7 @@ export function syncCombineHeightmapPanel(node) {
     form.setValues(values, true);
     form.unblockEvent();
   }
+  scheduleCombinePreview(node.id);
 }
 
 function buildFormElements(node) {
@@ -182,10 +184,12 @@ function handleCombineControlChange(nodeId, name, rawValue) {
   }
   if (name === "method") {
     updateHeightmapSettings(nodeId, { method: rawValue });
+    scheduleCombinePreview(nodeId);
     return;
   }
   if (name === "normalizeResult") {
     updateHeightmapSettings(nodeId, { normalizeResult: !!rawValue });
+    scheduleCombinePreview(nodeId);
     return;
   }
   const childMatch = name.match(/^(child[AB])\.(.+)$/);
@@ -202,5 +206,22 @@ function handleCombineControlChange(nodeId, name, rawValue) {
       next.factor = parseFloat(rawValue) || 0;
     }
     updateHeightmapSettings(nodeId, { [childKey]: next });
+    scheduleCombinePreview(nodeId);
   }
+}
+
+function scheduleCombinePreview(nodeId) {
+  const size = projectState.spec.size || 256;
+  const metaEl = document.getElementById(`combinePreviewMeta-${nodeId}`);
+  if (metaEl) {
+    metaEl.textContent = `${size} x ${size}`;
+  }
+  schedulePreview({
+    nodeId,
+    width: size,
+    height: size,
+    statusId: `combinePreviewStatus-${nodeId}`,
+    imageId: `combinePreviewImg-${nodeId}`,
+    buildJob: () => buildPreviewTree(nodeId),
+  });
 }

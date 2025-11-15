@@ -4,9 +4,8 @@ import {
   updateHeightmapSettings,
   getHeightmapById,
 } from "../state/projectState.js";
-
-const previewControllers = {};
-let noiseWorker = null;
+import { schedulePreview } from "../services/previewService.js";
+import { buildPreviewTree } from "../services/previewBuilder.js";
 
 const COMBO_FIELDS = new Set([
   "noiseType",
@@ -227,8 +226,7 @@ export function ensureNoiseHeightmapPanel(node) {
     applyFieldAvailability(node.id);
   }
   webix.delay(() => {
-    updatePreviewMeta(node.id);
-    schedulePreview(node.id);
+    scheduleNoisePreview(node.id);
   });
   return panelId;
 }
@@ -243,8 +241,7 @@ export function syncNoiseHeightmapPanel(node) {
     applyFieldAvailability(node.id);
   }
   webix.delay(() => {
-    updatePreviewMeta(node.id);
-    schedulePreview(node.id);
+    scheduleNoisePreview(node.id);
   });
 }
 
@@ -278,7 +275,7 @@ function handleControlChange(nodeId, name, rawValue) {
   }
   updateHeightmapSettings(nodeId, { [name]: parsed });
   applyFieldAvailability(nodeId);
-  schedulePreview(nodeId);
+  scheduleNoisePreview(nodeId);
 }
 
 function parseSettingValue(name, value) {
@@ -292,117 +289,20 @@ function parseSettingValue(name, value) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
-function schedulePreview(nodeId) {
-  const controller = ensurePreviewController(nodeId);
-  if (controller.timer) {
-    clearTimeout(controller.timer);
-  }
-  updatePreviewStatus(nodeId, "Berechne...");
-  controller.timer = setTimeout(() => dispatchPreview(nodeId), 250);
-}
-
-function dispatchPreview(nodeId) {
-  const controller = ensurePreviewController(nodeId);
-  controller.timer = null;
-  const entry = getHeightmapById(nodeId);
-  if (!entry) {
-    updatePreviewStatus(nodeId, "Keine Daten");
-    return;
-  }
+function scheduleNoisePreview(nodeId) {
   const size = projectState.spec.size || 256;
-  const payload = {
-    jobId: `${nodeId}-${Date.now()}`,
+  const metaEl = document.getElementById(`noisePreviewMeta-${nodeId}`);
+  if (metaEl) {
+    metaEl.textContent = `${size} x ${size}`;
+  }
+  schedulePreview({
     nodeId,
     width: size,
     height: size,
-    settings: entry.node.settings || { ...NOISE_HEIGHTMAP_DEFAULTS },
-  };
-  controller.currentJobId = payload.jobId;
-  getNoiseWorker().postMessage(payload);
-}
-
-function ensurePreviewController(nodeId) {
-  if (!previewControllers[nodeId]) {
-    const canvas = document.createElement("canvas");
-    previewControllers[nodeId] = {
-      canvas,
-      ctx: canvas.getContext("2d"),
-      timer: null,
-      currentJobId: null,
-      imageUrl: null,
-    };
-  }
-  return previewControllers[nodeId];
-}
-
-function getNoiseWorker() {
-  if (!noiseWorker) {
-    noiseWorker = new Worker("/assets/js/workers/noiseHeightmapWorker.js", { type: "module" });
-    noiseWorker.onmessage = handleWorkerMessage;
-    noiseWorker.onerror = (err) => {
-      console.error("Noise worker error", err.message);
-    };
-  }
-  return noiseWorker;
-}
-
-function handleWorkerMessage(event) {
-  const { jobId, nodeId, width, height, buffer, error } = event.data || {};
-  if (!nodeId || !jobId) return;
-  const controller = previewControllers[nodeId];
-  if (!controller || controller.currentJobId !== jobId) {
-    return;
-  }
-  if (error) {
-    controller.currentJobId = null;
-    updatePreviewStatus(nodeId, error);
-    return;
-  }
-  updatePreviewImage(nodeId, buffer, width, height, jobId);
-}
-
-function updatePreviewImage(nodeId, buffer, width, height, jobId) {
-  const controller = previewControllers[nodeId];
-  if (!controller) return;
-  const imageArray = new Uint8ClampedArray(buffer);
-  controller.canvas.width = width;
-  controller.canvas.height = height;
-  controller.ctx.putImageData(new ImageData(imageArray, width, height), 0, 0);
-  controller.canvas.toBlob((blob) => {
-    if (!blob) {
-      updatePreviewStatus(nodeId, "Render fehlgeschlagen");
-      return;
-    }
-    if (controller.currentJobId !== jobId) {
-      return;
-    }
-    if (controller.imageUrl) {
-      URL.revokeObjectURL(controller.imageUrl);
-    }
-    controller.imageUrl = URL.createObjectURL(blob);
-    controller.currentJobId = null;
-    const img = document.getElementById(`noisePreviewImg-${nodeId}`);
-    if (img) {
-      img.src = controller.imageUrl;
-    }
-    updatePreviewStatus(nodeId, "");
-  }, "image/png");
-}
-
-function updatePreviewStatus(nodeId, text) {
-  const statusEl = document.getElementById(`noisePreviewStatus-${nodeId}`);
-  if (statusEl) {
-    statusEl.textContent = text;
-    statusEl.style.opacity = text ? "1" : "0";
-  }
-}
-
-function updatePreviewMeta(nodeId) {
-  const metaEl = document.getElementById(`noisePreviewMeta-${nodeId}`);
-  if (metaEl) {
-    const size = projectState.spec.size || 0;
-    metaEl.textContent = `${size} x ${size}`;
-  }
+    statusId: `noisePreviewStatus-${nodeId}`,
+    imageId: `noisePreviewImg-${nodeId}`,
+    buildJob: () => buildPreviewTree(nodeId),
+  });
 }
 
 function applyFieldAvailability(nodeId) {
