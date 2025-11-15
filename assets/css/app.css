@@ -97,3 +97,9 @@ body.testing #app-root {
   padding: 6px 12px;
   border-radius: 999px;
 }
+
+.combine-preview-placeholder {
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}

@@ -40,7 +40,7 @@ export function ensureCombineHeightmapPanel(node) {
         rows: [
           {
             template:
-              "<div style='padding:24px 24px 8px'><div class='section-title'>Combine Heightmap</div><div class='notes'>Kombiniere zwei Heightmaps mittels mathematischer Operationen.</div></div>",
+              "<div style='padding:24px 24px 16px'><div class='section-title'>Combine Heightmap</div><div class='notes'>Kombiniere zwei Heightmaps mittels mathematischer Operationen.</div></div>",
             borderless: true,
             autoheight: true,
           },
@@ -51,7 +51,7 @@ export function ensureCombineHeightmapPanel(node) {
               id: formId,
               borderless: true,
               padding: { top: 0, left: 24, right: 24, bottom: 24 },
-              elementsConfig: { labelWidth: 160 },
+              elementsConfig: { labelWidth: 150 },
               elements: buildFormElements(node),
             },
           },
@@ -60,13 +60,27 @@ export function ensureCombineHeightmapPanel(node) {
       { view: "resizer" },
       {
         gravity: 1,
-        padding: 24,
         rows: [
+          {
+            template: `<div style='padding:24px 24px 4px'><div class='section-title'>Preview</div><div class='notes'>Simulation folgt (512 x 512)</div></div>`,
+            borderless: true,
+            autoheight: true,
+          },
+          {
+            view: "template",
+            css: "noise-preview-container",
+            borderless: true,
+            gravity: 1,
+            template: `
+              <div class='noise-preview-wrapper combine-preview'>
+                <div class='combine-preview-placeholder'>Preview folgt</div>
+              </div>
+            `,
+          },
           renderChildOverview(node.id),
-          { height: 10, borderless: true },
           {
             template:
-              "<div class='notes'>Nutze den Projektbaum, um unterhalb dieser Combine-Heightmap weitere Heightmaps anzulegen. Slots werden automatisch befüllt.</div>",
+              "<div class='notes' style='padding:8px 24px 24px'>Nutze den Projektbaum, um unterhalb dieser Combine-Heightmap weitere Heightmaps anzulegen. Slots werden automatisch befüllt.</div>",
             borderless: true,
             autoheight: true,
           },
@@ -92,7 +106,8 @@ export function syncCombineHeightmapPanel(node) {
   }
   const overview = webix.$$(`combineChildren-${node.id}`);
   if (overview) {
-    overview.setHTML(renderChildOverviewHTML(node.id));
+    overview.define("template", renderChildOverviewHTML(node.id));
+    overview.refresh();
   }
 }
 
@@ -125,16 +140,13 @@ function buildChildSection(nodeId, { key, label }, values) {
       borderless: true,
       autoheight: true,
     },
-    {
-      cols: [
-        { view: "checkbox", name: `${key}.normalize`, labelRight: "Normalize", value: values.normalize ? 1 : 0 },
-        { width: 16 },
-        { view: "text", name: `${key}.offset`, label: "Offset", value: values.offset },
-        { width: 16 },
-        { view: "text", name: `${key}.factor`, label: "Factor", value: values.factor },
-      ],
-    },
-    { height: 12, borderless: true },
+    { height: 6, borderless: true },
+    { view: "checkbox", name: `${key}.normalize`, labelRight: "Normalize", value: values.normalize ? 1 : 0 },
+    { height: 6, borderless: true },
+    { view: "text", name: `${key}.offset`, label: "Offset", value: values.offset },
+    { height: 6, borderless: true },
+    { view: "text", name: `${key}.factor`, label: "Factor", value: values.factor },
+    { height: 18, borderless: true },
   ];
 }
 
