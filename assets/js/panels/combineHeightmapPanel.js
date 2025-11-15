@@ -4,6 +4,8 @@ import {
   projectState,
   updateHeightmapSettings,
 } from "../state/projectState.js";
+import { schedulePreview } from "../services/previewService.js";
+import { buildPreviewTree } from "../services/previewBuilder.js";
 
 const METHOD_OPTIONS = [
   { id: "add", value: "Add (A + B)" },
