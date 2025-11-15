@@ -77,13 +77,6 @@ export function ensureCombineHeightmapPanel(node) {
               </div>
             `,
           },
-          renderChildOverview(node.id),
-          {
-            template:
-              "<div class='notes' style='padding:8px 24px 24px'>Nutze den Projektbaum, um unterhalb dieser Combine-Heightmap weitere Heightmaps anzulegen. Slots werden automatisch befüllt.</div>",
-            borderless: true,
-            autoheight: true,
-          },
         ],
       },
     ],
@@ -104,15 +97,11 @@ export function syncCombineHeightmapPanel(node) {
     form.setValues(values, true);
     form.unblockEvent();
   }
-  const overview = webix.$$(`combineChildren-${node.id}`);
-  if (overview) {
-    overview.define("template", renderChildOverviewHTML(node.id));
-    overview.refresh();
-  }
 }
 
 function buildFormElements(node) {
   const values = normalizeCombineSettings(node);
+  const children = node.children || [];
   return [
     {
       view: "text",
@@ -129,14 +118,15 @@ function buildFormElements(node) {
       ],
     },
     { height: 16, borderless: true },
-    ...CHILD_KEYS.flatMap((child) => buildChildSection(node.id, child, values[child.key])),
+    ...CHILD_KEYS.flatMap((child, index) => buildChildSection(node.id, child, values[child.key], children[index])),
   ];
 }
 
-function buildChildSection(nodeId, { key, label }, values) {
+function buildChildSection(nodeId, { key, label }, values, childId) {
+  const assignmentLabel = childId ? getHeightmapById(childId)?.node.value || childId : "Noch keine Heightmap zugeordnet";
   return [
     {
-      template: `<div class='section-title'>${label}</div><div class='notes'>Zuordnung über den Projektbaum</div>`,
+      template: `<div class='section-title'>${label}</div><div class='notes'>${assignmentLabel}</div>`,
       borderless: true,
       autoheight: true,
     },
@@ -213,30 +203,4 @@ function handleCombineControlChange(nodeId, name, rawValue) {
     }
     updateHeightmapSettings(nodeId, { [childKey]: next });
   }
-}
-
-function renderChildOverview(nodeId) {
-  return {
-    id: `combineChildren-${nodeId}`,
-    view: "template",
-    borderless: true,
-    template: renderChildOverviewHTML(nodeId),
-  };
-}
-
-function renderChildOverviewHTML(nodeId) {
-  const entry = getHeightmapById(nodeId);
-  const children = entry?.node.children || [];
-  if (!children.length) {
-    return "<div class='notes'>Noch keine untergeordneten Heightmaps.</div>";
-  }
-  const items = children
-    .slice(0, 2)
-    .map((childId, index) => {
-      const childEntry = getHeightmapById(childId);
-      const label = childEntry?.node.value || childId;
-      return `<div class='combine-child'>Slot ${index + 1}: ${label}</div>`;
-    })
-    .join("");
-  return `<div class='notes'>Zuordnungen:</div>${items}`;
 }
