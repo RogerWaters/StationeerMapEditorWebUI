@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Paint Panel UI Tests</title>
+    <link rel="stylesheet" href="../../vendor/mocha.css" />
+    <link rel="stylesheet" href="../../vendor/webix.css" />
+    <link rel="stylesheet" href="../../assets/css/app.css" />
+  </head>
+  <body class="testing">
+    <div id="mocha"></div>
+    <div id="app-root"></div>
+    <script src="../../vendor/mocha.js"></script>
+    <script src="../../vendor/chai.js"></script>
+    <script src="../../vendor/webix.js"></script>
+    <script src="../../vendor/onnxruntime/ort.min.js"></script>
+    <script src="../../vendor/linesToTerrain/linesToTerrain.js"></script>
+    <script type="module">
+      const { expect } = chai;
+      mocha.setup("bdd");
+
+      function waitForHarness() {
+        return new Promise((resolve) => {
+          const check = () => {
+            if (window.AppHarness) {
+              resolve(window.AppHarness);
+            } else {
+              setTimeout(check, 30);
+            }
+          };
+          check();
+        });
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function loadImageData(url) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          img.onload = () => {
+            const canvas = document.createElement("canvas");
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0);
+            resolve(ctx.getImageData(0, 0, img.width, img.height));
+          };
+          img.onerror = reject;
+          img.src = url;
+        });
+      }
+
+      async function waitForController(nodeId) {
+        for (let i = 0; i < 200; i += 1) {
+          if (window.PaintControllers && window.PaintControllers.get(nodeId)) {
+            return window.PaintControllers.get(nodeId);
+          }
+          await sleep(50);
+        }
+        throw new Error("Paint controller nicht gefunden");
+      }
+
+      async function waitForGeneratedHeightmap(nodeId, timeout = 60000) {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+          const entry = window.projectState.heightmaps.twoD.find((hm) => hm.id === nodeId);
+          if (entry?.settings?.generatedHeightmap?.pixels) {
+            return entry.settings.generatedHeightmap;
+          }
+          await sleep(100);
+        }
+        throw new Error("Kein generiertes Heightmap Ergebnis.");
+      }
+
+      function computeMSE(a, b) {
+        let sum = 0;
+        for (let i = 0; i < a.length; i += 1) {
+          const diff = a[i] - b[i];
+          sum += diff * diff;
+        }
+        return sum / a.length;
+      }
+
+      function normalizeImageData(imageData) {
+        const out = new Float32Array(imageData.width * imageData.height);
+        for (let i = 0; i < out.length; i += 1) {
+          out[i] = imageData.data[i * 4] / 255;
+        }
+        return out;
+      }
+
+      async function runTests() {
+        await import("../../assets/js/app.js");
+        const harness = await waitForHarness();
+
+        describe("Paint Panel Integration", () => {
+          it("reproduces reference out.png via LinesToTerrain", async function () {
+            this.timeout(120000);
+            harness.createWorld({ worldName: "PaintTF", worldSize: 512, worldHeight: 256 });
+            const nodeId = harness.createHeightmap({ bucket: "twoD", mapType: "paint" });
+            await harness.selectNode(nodeId);
+            const controller = await waitForController(nodeId);
+            const baseId = `paintHeightmapForm-${nodeId}`;
+            const normalizeField = webix.$$(`${baseId}-normalizeResult`);
+            const blurField = webix.$$(`${baseId}-blurAmount`);
+            if (normalizeField) {
+              normalizeField.setValue(0);
+            }
+            if (blurField) {
+              blurField.setValue(0);
+            }
+            await sleep(100);
+
+            const sketchData = await loadImageData("../data/paint_in.png");
+            controller.applySketchImage(sketchData);
+            const result = await waitForGeneratedHeightmap(nodeId);
+
+            expect(result.width).to.equal(512);
+            expect(result.height).to.equal(512);
+
+            const expectedImage = await loadImageData("../data/paint_out.png");
+            const expected = normalizeImageData(expectedImage);
+            const generated = result.pixels;
+
+            expect(generated.length).to.equal(expected.length);
+            const mse = computeMSE(generated, expected);
+            console.log("PAINT_LTT_MSE", mse);
+            expect(mse).to.be.below(0.01);
+          });
+        });
+
+        mocha.run((failures) => {
+          const status = failures ? 1 : 0;
+          document.body.setAttribute("data-test-result", status);
+          console.log(`TEST_RESULT:${status}`);
+        });
+      }
+
+      window.addEventListener("DOMContentLoaded", runTests);
+    </script>
+  </body>
+</html>

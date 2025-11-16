@@ -96,6 +96,19 @@
               expect(minField.isEnabled()).to.equal(true);
               expect(maxField.isEnabled()).to.equal(true);
             });
+
+            it("zeigt das Paint Panel und aktualisiert den Namen im Tree", async () => {
+              harness.createWorld({ worldName: "PaintWorld", worldSize: 512, worldHeight: 256 });
+              const nodeId = harness.createHeightmap({ bucket: "twoD", mapType: "paint" });
+              await harness.selectNode(nodeId);
+              const baseId = `paintHeightmapForm-${nodeId}`;
+              const nameField = webix.$$(`${baseId}-displayName`);
+              expect(nameField).to.not.equal(undefined);
+              nameField.setValue("Painter Layer");
+              await sleep(50);
+              const tree = webix.$$("navigation");
+              expect(tree.getItem(nodeId).value).to.equal("Painter Layer");
+            });
           });
 
           mocha.run((failures) => {

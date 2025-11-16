@@ -3,6 +3,7 @@ import {
   NOISE_HEIGHTMAP_DEFAULTS,
   COMBINE_HEIGHTMAP_DEFAULTS,
   UPLOAD_HEIGHTMAP_DEFAULTS,
+  PAINT_HEIGHTMAP_DEFAULTS,
 } from "../state/projectState.js";
 
 export function buildPreviewTree(nodeId) {
@@ -24,6 +25,8 @@ export function buildPreviewTree(nodeId) {
       return buildCombineJob(node);
     case "upload":
       return buildUploadJob(node);
+    case "paint":
+      return buildPaintJob(node);
     default:
       return { ok: false, error: `Preview für ${node.mapType} ist noch nicht implementiert.` };
   }
@@ -81,4 +84,34 @@ function buildUploadJob(node) {
 function coerce(value, fallback) {
   const num = parseFloat(value);
   return Number.isFinite(num) ? num : fallback;
+}
+
+function buildPaintJob(node) {
+  const settings = { ...PAINT_HEIGHTMAP_DEFAULTS, ...(node.settings || {}) };
+  const data = settings.canvasData;
+  if (!data || !data.width || !data.height) {
+    return { ok: false, error: "Bitte zeichne zuerst etwas auf der Leinwand." };
+  }
+  const generated = settings.generatedHeightmap;
+  if (!generated || !generated.pixels) {
+    return { ok: false, error: "LinesToTerrain Ergebnis wird berechnet ..." };
+  }
+  return {
+    ok: true,
+    job: {
+      type: "upload",
+      settings: {
+        mapping: "contain",
+        minValue: 0,
+        maxValue: 1,
+        normalize: false,
+        invert: false,
+      },
+      source: {
+        width: generated.width || data.width,
+        height: generated.height || data.height,
+        pixels: generated.pixels,
+      },
+    },
+  };
 }

@@ -71,6 +71,16 @@ export const UPLOAD_HEIGHTMAP_DEFAULTS = {
   sourceImage: null,
 };
 
+export const PAINT_HEIGHTMAP_DEFAULTS = {
+  displayName: "",
+  brushSize: 2,
+  tool: "peak",
+  normalizeResult: true,
+  blurAmount: 1,
+  canvasData: null,
+  generatedHeightmap: null,
+};
+
 export const projectState = {
   loaded: false,
   name: "Kein Projekt",
@@ -189,6 +199,9 @@ function buildInitialSettings(mapType) {
   }
   if (mapType === "upload") {
     return { ...UPLOAD_HEIGHTMAP_DEFAULTS };
+  }
+  if (mapType === "paint") {
+    return { ...PAINT_HEIGHTMAP_DEFAULTS };
   }
   return {};
 }

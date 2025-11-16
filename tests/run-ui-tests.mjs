@@ -1,26 +1,28 @@
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
-const TEST_URL = "http://127.0.0.1:8090/tests/ui/worldPanel.test.html";
-const DEBUG_PORT = 9222;
-const REMOTE_DEBUG_URL = `http://127.0.0.1:${DEBUG_PORT}/json/list`;
+const TEST_URLS = [
+  "http://127.0.0.1:8090/tests/ui/worldPanel.test.html",
+  "http://127.0.0.1:8090/tests/ui/paintPanel.test.html",
+];
 
-function launchChrome() {
+function launchChrome(url, port) {
   const args = [
     "--headless",
     "--no-sandbox",
     "--disable-gpu",
-    `--remote-debugging-port=${DEBUG_PORT}`,
-    TEST_URL,
+    `--remote-debugging-port=${port}`,
+    url,
   ];
   const proc = spawn("chromium", args, { stdio: "ignore" });
   return proc;
 }
 
-async function fetchWsUrl(retries = 50) {
+async function fetchWsUrl(port, retries = 50) {
+  const remoteUrl = `http://127.0.0.1:${port}/json/list`;
   for (let attempt = 0; attempt < retries; attempt += 1) {
     try {
-      const response = await fetch(REMOTE_DEBUG_URL);
+      const response = await fetch(remoteUrl);
       if (response.ok) {
         const targets = await response.json();
         const page = targets.find((target) => target.type === "page");
@@ -113,7 +115,7 @@ async function waitForDocumentReady(devtools) {
 }
 
 async function waitForTestResult(devtools) {
-  const timeoutMs = 20000;
+  const timeoutMs = 90000;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const evaluateResult = await devtools.send("Runtime.evaluate", {
@@ -129,31 +131,39 @@ async function waitForTestResult(devtools) {
   throw new Error("Testergebnis nicht gefunden");
 }
 
-(async () => {
-  const chrome = launchChrome();
+async function runTest(url, port) {
+  const chrome = launchChrome(url, port);
   const shutdown = () => {
     if (chrome.exitCode === null) {
       chrome.kill("SIGKILL");
     }
   };
-  process.on("exit", shutdown);
-  process.on("SIGINT", () => {
-    shutdown();
-    process.exit(1);
-  });
-
   try {
-    const wsUrl = await fetchWsUrl();
+    const wsUrl = await fetchWsUrl(port);
     const devtools = await DevToolsConnection.connect(wsUrl);
     await devtools.send("Runtime.enable");
     await devtools.send("Log.enable");
     await waitForDocumentReady(devtools);
     const result = await waitForTestResult(devtools);
     shutdown();
-    process.exit(result);
+    return result;
   } catch (error) {
     console.error(error.message);
     shutdown();
-    process.exit(1);
+    return 1;
   }
+}
+
+(async () => {
+  let exitCode = 0;
+  for (let i = 0; i < TEST_URLS.length; i += 1) {
+    const port = 9222 + i;
+    const result = await runTest(TEST_URLS[i], port);
+    if (result !== 0) {
+      exitCode = result;
+      break;
+    }
+    await delay(500);
+  }
+  process.exit(exitCode);
 })();
