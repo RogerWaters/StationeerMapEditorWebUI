@@ -199,7 +199,7 @@
     }
     const base = new URL(manifest.basePath || '.', manifestUrl);
     const buffers = [];
-    let total = typeof manifest.length === 'number' ? manifest.length : 0;
+    let total = 0;
     for (const chunk of manifest.chunks) {
       const file = chunk && chunk.file ? String(chunk.file) : null;
       if (!file) {
@@ -208,10 +208,10 @@
       const chunkUrl = new URL(file, base);
       const data = await fetchBinary(chunkUrl);
       buffers.push(data);
-      if (!total) {
-        total = 0;
-      }
       total += data.length;
+    }
+    if (buffers.length === 0) {
+      throw new Error('No chunk data found in manifest.');
     }
     const merged = new Uint8Array(total);
     let offset = 0;
