@@ -50,7 +50,7 @@ self.postMessage({
   level: "info",
   message: `WASM geladen in ${wasmLoadDuration}ms`,
 });
-const EXECUTION_PROVIDERS = detectExecutionProviders();
+let executionProviders = detectExecutionProviders();
 
 const MODEL_URL = resolveFromRoot("vendor/models/linesToTerrain/mountain.manifest.json");
 let modelPromise = null;
@@ -74,6 +74,17 @@ function configureExecutionEnv(provider, ort) {
   }
 }
 
+function fallbackToWasmProvider() {
+  executionProviders = ["wasm"];
+  modelPromise = null;
+  selectedProvider = null;
+  self.postMessage({
+    type: "debug",
+    level: "warning",
+    message: "WebGL/WebGPU-Probleme erkannt, fall back auf WASM.",
+  });
+}
+
 async function loadModelWithProviders() {
   const api = self.LinesToTerrain;
   if (!api || !api.LinesToTerrainModel) {
@@ -83,7 +94,7 @@ async function loadModelWithProviders() {
   if (!ort) {
     throw new Error("ONNX Runtime im Worker nicht verfügbar.");
   }
-  const candidates = EXECUTION_PROVIDERS.length ? EXECUTION_PROVIDERS : ["wasm"];
+  const candidates = executionProviders.length ? executionProviders : ["wasm"];
   let lastError = null;
   for (const provider of candidates) {
     try {
@@ -212,39 +223,11 @@ self.onmessage = async (event) => {
     return;
   }
   const messageId = data.id;
+  const inputStart = Date.now();
+  const payload = normalizeRgbPayload(data.payload || {});
+  const inputDuration = Date.now() - inputStart;
   try {
-    const ensureStart = Date.now();
-    const model = await ensureModel();
-    const ensureDuration = Date.now() - ensureStart;
-    const inputStart = Date.now();
-    const payload = normalizeRgbPayload(data.payload || {});
-    const inputDuration = Date.now() - inputStart;
-    const inferenceStart = Date.now();
-    const inference = await model.predict(payload);
-    const inferenceDuration = Date.now() - inferenceStart;
-    const resultStart = Date.now();
-    const normalized = prepareResult(inference, {
-      normalizeResult: false,
-      blurAmount: 0,
-    });
-    const resultDuration = Date.now() - resultStart;
-    const timings = {
-      wasmLoad: wasmLoadDuration,
-      modelLoad: modelLoadDuration,
-      ensureModel: ensureDuration,
-      inputPrep: inputDuration,
-      inference: inferenceDuration,
-      resultPrep: resultDuration,
-      provider: selectedProvider || "unknown",
-    };
-    self.postMessage({
-      type: "debug",
-      level: "info",
-      message: `Chunk-Timings ${payload.width}x${payload.height}`,
-      timings,
-    });
-    const buffer = normalized.pixels.buffer;
-    self.postMessage({ id: messageId, ok: true, width: normalized.width, height: normalized.height, buffer }, [buffer]);
+    await processInference(payload, messageId, inputDuration);
   } catch (error) {
     self.postMessage({
       type: "debug",
@@ -259,3 +242,49 @@ self.onmessage = async (event) => {
     });
   }
 };
+
+async function processInference(payload, messageId, inputDuration) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const ensureStart = Date.now();
+      const model = await ensureModel();
+      const ensureDuration = Date.now() - ensureStart;
+      const inferenceStart = Date.now();
+      const inference = await model.predict(payload);
+      const inferenceDuration = Date.now() - inferenceStart;
+      const resultStart = Date.now();
+      const normalized = prepareResult(inference, {
+        normalizeResult: false,
+        blurAmount: 0,
+      });
+      const resultDuration = Date.now() - resultStart;
+      const timings = {
+        wasmLoad: wasmLoadDuration,
+        modelLoad: modelLoadDuration,
+        ensureModel: ensureDuration,
+        inputPrep: inputDuration,
+        inference: inferenceDuration,
+        resultPrep: resultDuration,
+        provider: selectedProvider || "unknown",
+      };
+      self.postMessage({
+        type: "debug",
+        level: "info",
+        message: `Chunk-Timings ${payload.width}x${payload.height}`,
+        timings,
+      });
+      const buffer = normalized.pixels.buffer;
+      self.postMessage({ id: messageId, ok: true, width: normalized.width, height: normalized.height, buffer }, [buffer]);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (selectedProvider !== "wasm") {
+        fallbackToWasmProvider();
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
