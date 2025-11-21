@@ -5,6 +5,40 @@ function resolveFromRoot(path) {
   return new URL(path, rootUrl).href;
 }
 
+function supportsWebGPU() {
+  return typeof navigator === "object" && !!navigator?.gpu;
+}
+
+function supportsWebGL() {
+  if (typeof OffscreenCanvas === "undefined") {
+    return false;
+  }
+  try {
+    const canvas = new OffscreenCanvas(1, 1);
+    const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+    return !!gl;
+  } catch {
+    return false;
+  }
+}
+
+function detectExecutionProviders() {
+  const providers = [];
+  if (supportsWebGPU()) {
+    providers.push("webgpu");
+  }
+  if (supportsWebGL()) {
+    providers.push("webgl");
+  }
+  providers.push("wasm");
+  self.postMessage({
+    type: "debug",
+    level: "info",
+    message: `Execution providers detected: ${providers.join(", ")}`,
+  });
+  return providers;
+}
+
 const wasmLoadStart = Date.now();
 self.importScripts(
   resolveFromRoot("vendor/onnxruntime/ort.min.js"),
@@ -16,40 +50,77 @@ self.postMessage({
   level: "info",
   message: `WASM geladen in ${wasmLoadDuration}ms`,
 });
+const EXECUTION_PROVIDERS = detectExecutionProviders();
 
 const MODEL_URL = resolveFromRoot("vendor/models/linesToTerrain/mountain.manifest.json");
 let modelPromise = null;
 let modelLoadDuration = 0;
+let selectedProvider = null;
 
-function ensureModel() {
-  if (!modelPromise) {
-    const api = self.LinesToTerrain;
-    if (!api || !api.LinesToTerrainModel) {
-      throw new Error("LinesToTerrain API fehlt im Worker.");
-    }
-    const ort = self.ort;
-    if (!ort) {
-      throw new Error("ONNX Runtime im Worker nicht verfügbar.");
-    }
-    if (ort.env?.wasm) {
-      ort.env.wasm.numThreads = 1;
-      ort.env.wasm.proxy = false;
-      ort.env.wasm.wasmPaths = ortWasmBase;
-    }
-    const instance = new api.LinesToTerrainModel({
-      modelUrl: MODEL_URL,
-      ort,
-      sessionOptions: { executionProviders: ["wasm"] },
-    });
-    const modelLoadStart = Date.now();
-    modelPromise = instance.load().then(() => {
+function configureExecutionEnv(provider, ort) {
+  if (!ort?.env) {
+    return;
+  }
+  if (provider === "wasm" && ort.env.wasm) {
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.proxy = false;
+    ort.env.wasm.wasmPaths = ortWasmBase;
+  }
+  if (provider === "webgl" && ort.env.webgl) {
+    ort.env.webgl.enableSimd = true;
+  }
+  if (provider === "webgpu" && ort.env.webgpu) {
+    ort.env.webgpu.enableWebGPUAsync = true;
+  }
+}
+
+async function loadModelWithProviders() {
+  const api = self.LinesToTerrain;
+  if (!api || !api.LinesToTerrainModel) {
+    throw new Error("LinesToTerrain API fehlt im Worker.");
+  }
+  const ort = self.ort;
+  if (!ort) {
+    throw new Error("ONNX Runtime im Worker nicht verfügbar.");
+  }
+  const candidates = EXECUTION_PROVIDERS.length ? EXECUTION_PROVIDERS : ["wasm"];
+  let lastError = null;
+  for (const provider of candidates) {
+    try {
+      configureExecutionEnv(provider, ort);
+      const sessionOptions = { executionProviders: [provider] };
+      const instance = new api.LinesToTerrainModel({
+        modelUrl: MODEL_URL,
+        ort,
+        sessionOptions,
+      });
+      const modelLoadStart = Date.now();
+      await instance.load();
+      selectedProvider = provider;
       modelLoadDuration = Date.now() - modelLoadStart;
       self.postMessage({
         type: "debug",
         level: "info",
-        message: `LinesToTerrain-Modell geladen in ${modelLoadDuration}ms`,
+        message: `LinesToTerrain-Modell geladen (${provider}) in ${modelLoadDuration}ms`,
       });
       return instance;
+    } catch (error) {
+      lastError = error;
+      self.postMessage({
+        type: "debug",
+        level: "warning",
+        message: `Execution provider '${provider}' konnte nicht geladen werden: ${error?.message || String(error)}`,
+      });
+    }
+  }
+  throw lastError || new Error("Keine Execution Provider verfügbar.");
+}
+
+function ensureModel() {
+  if (!modelPromise) {
+    modelPromise = loadModelWithProviders().catch((error) => {
+      modelPromise = null;
+      throw error;
     });
   }
   return modelPromise;
@@ -164,6 +235,7 @@ self.onmessage = async (event) => {
       inputPrep: inputDuration,
       inference: inferenceDuration,
       resultPrep: resultDuration,
+      provider: selectedProvider || "unknown",
     };
     self.postMessage({
       type: "debug",
