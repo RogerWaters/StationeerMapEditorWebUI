@@ -281,7 +281,7 @@ function ensureModel() {
 }
 
 async function runInferenceWithPrepared(model, prepared) {
-  const dims = [prepared.height, prepared.width, 3];
+  const dims = [0, 0, 3];
   const tensor = new model.ort.Tensor("float32", prepared.data, dims);
   const feeds = { "browser_input:0": tensor };
   const results = await model.session.run(feeds);
