@@ -281,8 +281,9 @@ function ensureModel() {
 }
 
 async function runInferenceWithPrepared(model, prepared) {
-  const dims = [0, 0, 3];
+  const dims = [1, prepared.height, prepared.width, 3];
   const tensor = new model.ort.Tensor("float32", prepared.data, dims);
+  tensor.tensorLayout = "NHWC";
   const feeds = { "browser_input:0": tensor };
   const results = await model.session.run(feeds);
   const rgbTensor = results["browser_output:0"];
