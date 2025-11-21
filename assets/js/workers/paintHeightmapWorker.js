@@ -5,13 +5,21 @@ function resolveFromRoot(path) {
   return new URL(path, rootUrl).href;
 }
 
+const wasmLoadStart = Date.now();
 self.importScripts(
   resolveFromRoot("vendor/onnxruntime/ort.min.js"),
   resolveFromRoot("vendor/linesToTerrain/linesToTerrain.js")
 );
+const wasmLoadDuration = Date.now() - wasmLoadStart;
+self.postMessage({
+  type: "debug",
+  level: "info",
+  message: `WASM geladen in ${wasmLoadDuration}ms`,
+});
 
 const MODEL_URL = resolveFromRoot("vendor/models/linesToTerrain/mountain.manifest.json");
 let modelPromise = null;
+let modelLoadDuration = 0;
 
 function ensureModel() {
   if (!modelPromise) {
@@ -33,7 +41,16 @@ function ensureModel() {
       ort,
       sessionOptions: { executionProviders: ["wasm"] },
     });
-    modelPromise = instance.load().then(() => instance);
+    const modelLoadStart = Date.now();
+    modelPromise = instance.load().then(() => {
+      modelLoadDuration = Date.now() - modelLoadStart;
+      self.postMessage({
+        type: "debug",
+        level: "info",
+        message: `LinesToTerrain-Modell geladen in ${modelLoadDuration}ms`,
+      });
+      return instance;
+    });
   }
   return modelPromise;
 }
@@ -125,14 +142,35 @@ self.onmessage = async (event) => {
   }
   const messageId = data.id;
   try {
+    const ensureStart = Date.now();
     const model = await ensureModel();
+    const ensureDuration = Date.now() - ensureStart;
+    const inputStart = Date.now();
     const payload = normalizeRgbPayload(data.payload || {});
+    const inputDuration = Date.now() - inputStart;
+    const inferenceStart = Date.now();
     const inference = await model.predict(payload);
-    const options = {
-      normalizeResult: !!(data.payload?.normalizeResult),
-      blurAmount: data.payload?.blurAmount ?? 0,
+    const inferenceDuration = Date.now() - inferenceStart;
+    const resultStart = Date.now();
+    const normalized = prepareResult(inference, {
+      normalizeResult: false,
+      blurAmount: 0,
+    });
+    const resultDuration = Date.now() - resultStart;
+    const timings = {
+      wasmLoad: wasmLoadDuration,
+      modelLoad: modelLoadDuration,
+      ensureModel: ensureDuration,
+      inputPrep: inputDuration,
+      inference: inferenceDuration,
+      resultPrep: resultDuration,
     };
-    const normalized = prepareResult(inference, options);
+    self.postMessage({
+      type: "debug",
+      level: "info",
+      message: `Chunk-Timings ${payload.width}x${payload.height}`,
+      timings,
+    });
     const buffer = normalized.pixels.buffer;
     self.postMessage({ id: messageId, ok: true, width: normalized.width, height: normalized.height, buffer }, [buffer]);
   } catch (error) {
