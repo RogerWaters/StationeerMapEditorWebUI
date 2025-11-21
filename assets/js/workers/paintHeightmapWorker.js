@@ -280,8 +280,8 @@ function ensureModel() {
   return modelPromise;
 }
 
-async function runInferenceWithPrepared(model, prepared, provider) {
-  const dims = provider === "wasm" ? [prepared.height, prepared.width, 3] : [1, prepared.height, prepared.width, 3];
+async function runInferenceWithPrepared(model, prepared) {
+  const dims = [prepared.height, prepared.width, 3];
   const tensor = new model.ort.Tensor("float32", prepared.data, dims);
   const feeds = { "browser_input:0": tensor };
   const results = await model.session.run(feeds);
@@ -409,7 +409,7 @@ async function processInference(payload, messageId) {
       const prepared = prepareInputPixels({ width: payload.width, height: payload.height, data: payload.data });
       const inputDuration = Date.now() - inputStart;
       const inferenceStart = Date.now();
-      const inference = await runInferenceWithPrepared(model, prepared, selectedProvider || "wasm");
+      const inference = await runInferenceWithPrepared(model, prepared);
       const inferenceDuration = Date.now() - inferenceStart;
       const resultStart = Date.now();
       const normalized = prepareResult(inference, {
