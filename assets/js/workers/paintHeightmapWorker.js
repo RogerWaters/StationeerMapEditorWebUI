@@ -216,14 +216,15 @@ function configureExecutionEnv(provider, ort) {
   }
 }
 
-function fallbackToWasmProvider() {
+function fallbackToWasmProvider(error) {
   executionProviders = ["wasm"];
   modelPromise = null;
   selectedProvider = null;
+  const detail = error ? `: ${error?.message || String(error)}` : "";
   self.postMessage({
     type: "debug",
     level: "warning",
-    message: "WebGL/WebGPU-Probleme erkannt, fall back auf WASM.",
+    message: `WebGL/WebGPU-Probleme erkannt, fall back auf WASM${detail}`,
   });
 }
 
@@ -257,14 +258,14 @@ async function loadModelWithProviders() {
         message: `LinesToTerrain-Modell geladen (${provider}) in ${modelLoadDuration}ms`,
       });
       return instance;
-    } catch (error) {
-      lastError = error;
-      self.postMessage({
-        type: "debug",
-        level: "warning",
-        message: `Execution provider '${provider}' konnte nicht geladen werden: ${error?.message || String(error)}`,
-      });
-    }
+      } catch (error) {
+        lastError = error;
+        self.postMessage({
+          type: "debug",
+          level: "warning",
+          message: `Execution provider '${provider}' konnte nicht geladen werden: ${error?.message || String(error)}`,
+        });
+      }
   }
   throw lastError || new Error("Keine Execution Provider verfügbar.");
 }
@@ -434,14 +435,14 @@ async function processInference(payload, messageId) {
       const buffer = normalized.pixels.buffer;
       self.postMessage({ id: messageId, ok: true, width: normalized.width, height: normalized.height, buffer }, [buffer]);
       return;
-    } catch (error) {
-      lastError = error;
-      if (selectedProvider !== "wasm") {
-        fallbackToWasmProvider();
-        continue;
+      } catch (error) {
+        lastError = error;
+        if (selectedProvider !== "wasm") {
+          fallbackToWasmProvider(error);
+          continue;
+        }
+        throw error;
       }
-      throw error;
-    }
   }
   throw lastError;
 }
