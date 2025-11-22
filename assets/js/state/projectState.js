@@ -84,6 +84,14 @@ export const PAINT_HEIGHTMAP_DEFAULTS = {
   generatedHeightmap: null,
 };
 
+export const BIOME_REGION_DEFAULTS = {
+  heightmapId: null,
+  blendRadius: 32,
+  blendFeather: 0.5,
+  blendNoise: 0.15,
+  blendNoiseScale: 0.5,
+};
+
 export const CONTINENT_DEFAULTS = {
   method: "voronoi",
   continentCount: 5,
@@ -100,6 +108,9 @@ export const projectState = {
   spec: {
     size: 4096,
     height: 512,
+  },
+  biomes: {
+    regions: [],
   },
   continents: { ...CONTINENT_DEFAULTS },
   heightmaps: {
@@ -141,6 +152,10 @@ export function resetHeightmaps() {
   projectState.counters.threeD = 1;
 }
 
+export function resetBiomes() {
+  projectState.biomes = { regions: [] };
+}
+
 export function resetContinents() {
   projectState.continents = { ...CONTINENT_DEFAULTS };
 }
@@ -153,6 +168,7 @@ export function createWorld(config) {
     height: clampWorldHeight(config.worldHeight ?? WORLD_HEIGHT_LIMIT.min),
   };
   resetHeightmaps();
+  resetBiomes();
   resetContinents();
   return { ...projectState };
 }
@@ -359,4 +375,41 @@ export function updateContinentSettings(updates) {
 
 export function getContinentSettings() {
   return sanitizeContinentSettings(projectState.continents);
+}
+
+function buildBiomeRegions(count) {
+  const regions = [];
+  for (let i = 0; i < count; i += 1) {
+    const existing = projectState.biomes.regions[i];
+    regions.push({
+      name: existing?.name || `Region ${i + 1}`,
+      heightmapId: existing?.heightmapId ?? null,
+      blendRadius: Number.isFinite(existing?.blendRadius) ? existing.blendRadius : BIOME_REGION_DEFAULTS.blendRadius,
+      blendFeather: Number.isFinite(existing?.blendFeather) ? existing.blendFeather : BIOME_REGION_DEFAULTS.blendFeather,
+      blendNoise: Number.isFinite(existing?.blendNoise) ? existing.blendNoise : BIOME_REGION_DEFAULTS.blendNoise,
+      blendNoiseScale: Number.isFinite(existing?.blendNoiseScale) ? existing.blendNoiseScale : BIOME_REGION_DEFAULTS.blendNoiseScale,
+    });
+  }
+  return regions;
+}
+
+export function ensureBiomeRegions(regionCount) {
+  const count = Math.max(0, parseInt(regionCount, 10) || 0);
+  projectState.biomes.regions = buildBiomeRegions(count);
+  return projectState.biomes.regions;
+}
+
+export function updateBiomeRegion(index, updates) {
+  if (!projectState.biomes.regions || index < 0 || index >= projectState.biomes.regions.length) return null;
+  const current = projectState.biomes.regions[index];
+  const next = {
+    ...current,
+    ...updates,
+  };
+  projectState.biomes.regions[index] = next;
+  return next;
+}
+
+export function getBiomeRegions() {
+  return projectState.biomes.regions || [];
 }

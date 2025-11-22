@@ -1,9 +1,12 @@
 import { buildPreviewTree } from "./previewBuilder.js";
 import {
   clampWorldHeight,
+  ensureBiomeRegions,
+  getBiomeRegions,
   getContinentSettings,
   projectState,
   resetContinents,
+  resetBiomes,
   resetHeightmaps,
   sanitizeContinentSettings,
   sanitizeWorldName,
@@ -80,6 +83,8 @@ function buildProjectXml(projectMeta, nodes) {
   lines.push(`  <Counters twoD="${projectMeta.counters.twoD}" threeD="${projectMeta.counters.threeD}" />`);
   const continentSettings = projectMeta.continents || {};
   lines.push(`  <Continents><![CDATA[${JSON.stringify(continentSettings)}]]></Continents>`);
+  const biomeRegions = projectMeta.biomes?.regions || [];
+  lines.push(`  <Biomes><![CDATA[${JSON.stringify({ regions: biomeRegions })}]]></Biomes>`);
   nodes.forEach((node) => {
     lines.push(
       `  <Heightmap id="${escapeAttr(node.id)}" bucket="${escapeAttr(node.bucket)}" type="${escapeAttr(node.type)}" label="${escapeAttr(node.label)}" parent="${escapeAttr(node.parentId || "")}">`
@@ -229,6 +234,7 @@ export async function saveTerrainProject(onProgress) {
       twoD: projectState.counters.twoD || 1,
       threeD: projectState.counters.threeD || 1,
     },
+    biomes: { regions: getBiomeRegions() },
     continents: getContinentSettings(),
   };
   const xml = buildProjectXml(projectMeta, nodesMeta);
@@ -275,6 +281,17 @@ export async function loadTerrainFromFile(file) {
       continents = getContinentSettings();
     }
   }
+  const biomesNode = projectEl.querySelector("Biomes");
+  let biomes = { regions: [] };
+  if (biomesNode && biomesNode.textContent) {
+    try {
+      const parsed = JSON.parse(biomesNode.textContent);
+      biomes = { regions: Array.isArray(parsed?.regions) ? parsed.regions : [] };
+    } catch (error) {
+      console.warn("Konnte Biome-Daten nicht parsen, nutze Defaults.", error);
+      biomes = { regions: [] };
+    }
+  }
   const nextState = {
     loaded: true,
     name: sanitizeWorldName(name) || "Geladene Welt",
@@ -282,6 +299,7 @@ export async function loadTerrainFromFile(file) {
     heightmaps: { twoD: [], threeD: [] },
     counters,
     continents,
+    biomes,
   };
   const heightmapNodes = projectEl.querySelectorAll("Heightmap");
   for (const el of heightmapNodes) {
@@ -411,11 +429,14 @@ async function hydrateAssets(zip, heightmaps) {
 function applyLoadedState(nextState) {
   resetHeightmaps();
   resetContinents();
+  resetBiomes();
   projectState.loaded = true;
   projectState.name = nextState.name;
   projectState.spec = { ...nextState.spec };
   projectState.counters = { ...nextState.counters };
   projectState.continents = sanitizeContinentSettings(nextState.continents || {});
+  ensureBiomeRegions(nextState.biomes?.regions?.length || 0);
+  projectState.biomes.regions = Array.isArray(nextState.biomes?.regions) ? nextState.biomes.regions : [];
   projectState.heightmaps.twoD = nextState.heightmaps.twoD || [];
   projectState.heightmaps.threeD = nextState.heightmaps.threeD || [];
 }

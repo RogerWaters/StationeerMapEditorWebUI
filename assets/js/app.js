@@ -2,6 +2,7 @@ import { defaultPanel } from "./panels/defaultPanel.js";
 import { ensureTemplatePanel, getPanelTemplate } from "./panels/templates.js";
 import { createWorldPanel, syncWorldPanelValues } from "./panels/worldPanel.js";
 import { ensureContinentsPanel, syncContinentsPanel } from "./panels/continentsPanel.js";
+import { ensureBiomesPanel, syncBiomesPanel } from "./panels/biomePanel.js";
 import { ensureNoiseHeightmapPanel, syncNoiseHeightmapPanel } from "./panels/noiseHeightmapPanel.js";
 import { ensureCombineHeightmapPanel, syncCombineHeightmapPanel } from "./panels/combineHeightmapPanel.js";
 import { ensurePaintHeightmapPanel, syncPaintHeightmapPanel } from "./panels/paintHeightmapPanel.js";
@@ -169,6 +170,12 @@ function updateWorkspace(nodeId) {
   if (nodeId === "continents") {
     const panelId = ensureContinentsPanel();
     syncContinentsPanel();
+    workspace.setValue(panelId);
+    return;
+  }
+  if (nodeId === "biomes") {
+    const panelId = ensureBiomesPanel();
+    syncBiomesPanel();
     workspace.setValue(panelId);
     return;
   }
