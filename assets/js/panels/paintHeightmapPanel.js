@@ -6,7 +6,7 @@ import {
 } from "../state/projectState.js";
 import { schedulePreview } from "../services/previewService.js";
 import { buildPreviewTree } from "../services/previewBuilder.js";
-import { queuePaintInference } from "../services/paintModelService.js";
+import { runPaintModel } from "../services/paintModelService.js";
 
 const TOOL_CONFIG = {
   peak: { color: "#ff0000", value: 1 },
@@ -53,6 +53,19 @@ function clampPercentValue(value) {
     return 0;
   }
   return Math.max(0, Math.min(100, numeric));
+}
+
+const TILE_SIZE = 512;
+const TILE_OFFSETS = [
+  { offsetX: 0, offsetY: 0 },
+  { offsetX: -TILE_SIZE / 2, offsetY: 0 },
+  { offsetX: 0, offsetY: -TILE_SIZE / 2 },
+];
+
+function getWorldCanvasSize() {
+  const size = projectState.spec.size || TILE_SIZE;
+  const clamped = Math.max(TILE_SIZE, size);
+  return { width: clamped, height: clamped };
 }
 
 export function ensurePaintHeightmapPanel(node) {
@@ -174,6 +187,7 @@ function buildCanvasTemplate(nodeId) {
         <button type="button" class="paint-tool" data-tool="eraser">⏹ Eraser</button>
         <div class="paint-toolbar-spacer"></div>
         <button type="button" class="paint-tool paint-tool-clear" data-action="clear">❌ Clear</button>
+        <button type="button" class="paint-tool paint-tool-apply" data-action="apply">▶ Apply</button>
       </div>
       <div class="paint-status" id="paintStatus-${nodeId}"></div>
       <div class="paint-canvas-container">
@@ -334,24 +348,30 @@ function schedulePaintPreview(nodeId) {
   });
 }
 
+
 class PaintCanvasController {
   constructor(node, host, canvas) {
     this.nodeId = node.id;
     this.canvas = canvas;
     this.host = host;
     this.ctx = canvas.getContext("2d");
-    this.dataCanvas = document.createElement("canvas");
-    this.dataCanvas.width = canvas.width;
-    this.dataCanvas.height = canvas.height;
-    this.dataCtx = this.dataCanvas.getContext("2d", { willReadFrequently: true });
-    this.isDrawing = false;
-    this.lastPoint = null;
     this.tool = "peak";
     this.brushSize = PAINT_HEIGHTMAP_DEFAULTS.brushSize;
     this.statusEl = document.getElementById(`paintStatus-${node.id}`);
-    this.autoQueued = false;
     this.modelCanvas = document.createElement("canvas");
     this.settings = { ...PAINT_HEIGHTMAP_DEFAULTS };
+    const { width, height } = getWorldCanvasSize();
+    this.worldWidth = width;
+    this.worldHeight = height;
+    this.worldCanvas = document.createElement("canvas");
+    this.worldCanvas.width = width;
+    this.worldCanvas.height = height;
+    this.worldCtx = this.worldCanvas.getContext("2d", { willReadFrequently: true });
+    this.updateScaleFactors();
+    this.tiledInferenceToken = 0;
+    this.dirty = false;
+    this.processingInference = false;
+    this.applyButton = null;
     this.attachToolbar();
     this.attachEvents();
     this.resetLayers();
@@ -360,6 +380,16 @@ class PaintCanvasController {
 
   updateNode(node) {
     const settings = normalizeSettings(node);
+    const { width, height } = getWorldCanvasSize();
+    if (width !== this.worldWidth || height !== this.worldHeight) {
+      this.worldWidth = width;
+      this.worldHeight = height;
+      this.worldCanvas.width = width;
+      this.worldCanvas.height = height;
+      this.worldCtx = this.worldCanvas.getContext("2d", { willReadFrequently: true });
+      this.updateScaleFactors();
+      this.resetLayers();
+    }
     this.settings = { ...settings };
     this.tool = settings.tool || "peak";
     this.brushSize = settings.brushSize || PAINT_HEIGHTMAP_DEFAULTS.brushSize;
@@ -371,24 +401,15 @@ class PaintCanvasController {
       this.resetLayers();
       this.setStatus("");
     }
-    if (settings.canvasData?.pixels instanceof Float32Array) {
+    if (settings.canvasData?.pixels?.length) {
       this.restoreHeight(settings.canvasData);
-    } else if (settings.canvasData?.pixels?.length) {
-      this.restoreHeight({
-        width: settings.canvasData.width,
-        height: settings.canvasData.height,
-        pixels: new Float32Array(settings.canvasData.pixels),
-      });
-    }
-    if (!settings.canvasData) {
-      this.resetLayers();
-      this.setStatus("");
     }
     if (settings.generatedHeightmap) {
       this.updateModelPreview(settings.generatedHeightmap);
       this.setStatus("LinesToTerrain: Aktualisiert");
+    } else if (settings.canvasData?.pixels?.length) {
+      this.markDirty("LinesToTerrain: Apply für neue Berechnung");
     }
-    this.maybeAutoGenerate(settings);
   }
 
   attachToolbar() {
@@ -403,9 +424,13 @@ class PaintCanvasController {
         this.setTool(tool);
       } else if (action === "clear") {
         this.clearCanvas();
+      } else if (action === "apply") {
+        this.handleApplyAction();
       }
     });
     this.syncToolbar();
+    this.applyButton = this.toolbar.querySelector("[data-action='apply']");
+    this.updateApplyButton();
   }
 
   attachEvents() {
@@ -418,13 +443,16 @@ class PaintCanvasController {
   handlePointerDown(event) {
     event.preventDefault();
     this.isDrawing = true;
-    this.lastPoint = this.getRelativePosition(event);
-    this.drawPoint(this.lastPoint, true);
+    const displayPoint = this.getRelativePosition(event);
+    const worldPoint = this.displayToWorld(displayPoint);
+    this.lastPoint = worldPoint;
+    this.drawPoint(worldPoint);
   }
 
   handlePointerMove(event) {
     if (!this.isDrawing) return;
-    const point = this.getRelativePosition(event);
+    const displayPoint = this.getRelativePosition(event);
+    const point = this.displayToWorld(displayPoint);
     this.drawLine(this.lastPoint, point);
     this.lastPoint = point;
   }
@@ -447,43 +475,57 @@ class PaintCanvasController {
 
   drawLine(from, to) {
     if (!from) {
-      this.drawPoint(to, false);
+      this.drawPoint(to);
       return;
     }
-    const displayColor = TOOL_CONFIG[this.tool].color;
-    const dataValue = TOOL_CONFIG[this.tool].value;
-    this.ctx.strokeStyle = displayColor;
-    this.ctx.lineWidth = this.brushSize;
-    this.ctx.lineCap = "round";
-    this.ctx.lineJoin = "round";
-    this.ctx.beginPath();
-    this.ctx.moveTo(from.x, from.y);
-    this.ctx.lineTo(to.x, to.y);
-    this.ctx.stroke();
-
-    const dataColor = Math.round(dataValue * 255);
-    this.dataCtx.strokeStyle = `rgb(${dataColor},${dataColor},${dataColor})`;
-    this.dataCtx.lineWidth = this.brushSize;
-    this.dataCtx.lineCap = "round";
-    this.dataCtx.lineJoin = "round";
-    this.dataCtx.beginPath();
-    this.dataCtx.moveTo(from.x, from.y);
-    this.dataCtx.lineTo(to.x, to.y);
-    this.dataCtx.stroke();
+    const color = TOOL_CONFIG[this.tool].color;
+    const displayFrom = this.worldToDisplay(from);
+    const displayTo = this.worldToDisplay(to);
+    this.renderStroke(this.ctx, displayFrom, displayTo, this.brushSize, color);
+    const worldBrush = Math.max(1, this.brushSize * this.worldScale);
+    this.renderStroke(this.worldCtx, from, to, worldBrush, color);
   }
 
-  drawPoint(point, applyColor) {
-    const displayColor = TOOL_CONFIG[this.tool].color;
-    this.ctx.fillStyle = displayColor;
-    this.ctx.beginPath();
-    this.ctx.arc(point.x, point.y, this.brushSize / 2, 0, Math.PI * 2);
-    this.ctx.fill();
+  drawPoint(point) {
+    if (!point) return;
+    const color = TOOL_CONFIG[this.tool].color;
+    const displayPoint = this.worldToDisplay(point);
+    const worldBrush = Math.max(1, this.brushSize * this.worldScale);
+    this.renderDot(this.ctx, displayPoint, this.brushSize, color);
+    this.renderDot(this.worldCtx, point, worldBrush, color);
+  }
 
-    const dataColor = Math.round(TOOL_CONFIG[this.tool].value * 255);
-    this.dataCtx.fillStyle = `rgb(${dataColor},${dataColor},${dataColor})`;
-    this.dataCtx.beginPath();
-    this.dataCtx.arc(point.x, point.y, this.brushSize / 2, 0, Math.PI * 2);
-    this.dataCtx.fill();
+  renderStroke(ctx, from, to, width, color) {
+    if (!from || !to) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+  }
+
+  renderDot(ctx, point, width, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, width / 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  displayToWorld(point) {
+    return {
+      x: Math.max(0, Math.min(this.worldWidth, point.x * this.worldScaleX)),
+      y: Math.max(0, Math.min(this.worldHeight, point.y * this.worldScaleY)),
+    };
+  }
+
+  worldToDisplay(point) {
+    return {
+      x: point.x / this.worldScaleX,
+      y: point.y / this.worldScaleY,
+    };
   }
 
   clearCanvas() {
@@ -494,9 +536,8 @@ class PaintCanvasController {
   resetLayers() {
     this.ctx.fillStyle = "#000000";
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    const neutral = Math.round(0.5 * 255);
-    this.dataCtx.fillStyle = `rgb(${neutral},${neutral},${neutral})`;
-    this.dataCtx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.worldCtx.fillStyle = "#000000";
+    this.worldCtx.fillRect(0, 0, this.worldWidth, this.worldHeight);
     this.updateInputPreview(null);
     this.updateModelPreview(null);
   }
@@ -515,7 +556,7 @@ class PaintCanvasController {
     if (!width || !height || pixels.length !== width * height) {
       return;
     }
-    const imageData = this.dataCtx.createImageData(width, height);
+    const imageData = this.worldCtx.createImageData(width, height);
     for (let i = 0; i < pixels.length; i += 1) {
       const value = Math.max(0, Math.min(1, pixels[i]));
       const color = Math.round(value * 255);
@@ -525,21 +566,29 @@ class PaintCanvasController {
       imageData.data[idx + 2] = color;
       imageData.data[idx + 3] = 255;
     }
-    this.dataCtx.putImageData(imageData, 0, 0);
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext("2d");
+    tempCtx.putImageData(imageData, 0, 0);
+    this.worldCtx.drawImage(tempCanvas, 0, 0, this.worldWidth, this.worldHeight);
+    this.ctx.drawImage(tempCanvas, 0, 0, this.canvas.width, this.canvas.height);
   }
 
   extractFloatPixels() {
-    const img = this.dataCtx.getImageData(0, 0, this.dataCanvas.width, this.dataCanvas.height);
-    const floats = new Float32Array(this.dataCanvas.width * this.dataCanvas.height);
+    if (!this.worldWidth || !this.worldHeight) {
+      return new Float32Array(0);
+    }
+    const image = this.worldCtx.getImageData(0, 0, this.worldWidth, this.worldHeight).data;
+    const floats = new Float32Array(this.worldWidth * this.worldHeight);
     for (let i = 0; i < floats.length; i += 1) {
-      floats[i] = img.data[i * 4] / 255;
+      floats[i] = image[i * 4] / 255;
     }
     return floats;
   }
 
   saveState() {
     const pixels = this.extractFloatPixels();
-    const rgbPixels = this.extractColorPixels();
     let dataUrl = null;
     try {
       dataUrl = this.canvas.toDataURL("image/png");
@@ -549,23 +598,236 @@ class PaintCanvasController {
     this.updateInputPreview(dataUrl);
     updateHeightmapSettings(this.nodeId, {
       canvasData: {
-        width: this.dataCanvas.width,
-        height: this.dataCanvas.height,
+        width: this.worldWidth,
+        height: this.worldHeight,
         pixels,
         displayUrl: dataUrl,
-        rgbPixels,
       },
       brushSize: this.brushSize,
       tool: this.tool,
     });
-    const payload = {
-      width: this.dataCanvas.width,
-      height: this.dataCanvas.height,
-      rgbPixels,
-      ...this.getPostProcessOptions(),
-    };
-    this.runInference(payload);
-    schedulePaintPreview(this.nodeId);
+    this.markDirty("LinesToTerrain: Zeichnung geändert – Apply klicken");
+  }
+
+  async runTiledInference() {
+    if (!this.worldWidth || !this.worldHeight || this.processingInference) return null;
+    this.processingInference = true;
+    this.dirty = false;
+    this.updateApplyButton();
+    const token = ++this.tiledInferenceToken;
+    const options = this.getPostProcessOptions();
+    this.setStatus("LinesToTerrain: Berechnung ...");
+    try {
+      const result = await this.generateTiledHeightmap(options, token);
+      if (this.tiledInferenceToken !== token || !result) return null;
+      const payload = { ...result };
+      updateHeightmapSettings(this.nodeId, { generatedHeightmap: payload });
+      this.updateModelPreview(payload);
+      schedulePaintPreview(this.nodeId);
+      this.setStatus("LinesToTerrain: Aktualisiert");
+      return payload;
+    } catch (error) {
+      if (this.tiledInferenceToken !== token) return null;
+      this.dirty = true;
+      this.markDirty("LinesToTerrain: Berechnung fehlgeschlagen – Apply erneut");
+      console.error("LinesToTerrain Inferenz fehlgeschlagen", error);
+      return null;
+    } finally {
+      this.processingInference = false;
+      this.updateApplyButton();
+    }
+  }
+
+  async generateTiledHeightmap(options, token) {
+    const chunkSize = TILE_SIZE;
+    const chunks = this.buildChunkList();
+    if (!chunks.length) {
+      return null;
+    }
+    const worldImage = this.worldCtx.getImageData(0, 0, this.worldWidth, this.worldHeight);
+    const finalPixels = new Float32Array(this.worldWidth * this.worldHeight);
+    const weightAccum = new Float32Array(finalPixels.length);
+    let completedChunks = 0;
+    const jobs = chunks.map((chunk, index) => {
+      const chunkNumber = index + 1;
+      const { payload, buildDuration } = this.buildChunkPayload(chunk, worldImage);
+      const jobPayload = { ...payload, ...options };
+      const meta = {
+        chunkNumber,
+        originX: chunk.originX,
+        originY: chunk.originY,
+        buildDuration,
+      };
+      console.info(`[PaintHeightmap] chunk payload build ${chunkNumber}/${chunks.length} ${buildDuration.toFixed(1)}ms`, meta);
+      this.reportChunkStatus(chunkNumber, chunks.length, chunk, "queued");
+      return runPaintModel(jobPayload, meta)
+        .then((result) => {
+          if (this.tiledInferenceToken !== token || !result) {
+            return;
+          }
+          this.blendChunkResult(result, chunk, finalPixels, weightAccum);
+          completedChunks += 1;
+          this.reportChunkStatus(chunkNumber, chunks.length, chunk, "completed", { completed: completedChunks });
+        })
+        .catch((error) => {
+          console.error("Chunk Inferenz fehlgeschlagen", error);
+          throw error;
+        });
+    });
+    await Promise.all(jobs);
+    if (this.tiledInferenceToken !== token) {
+      return null;
+    }
+    this.setStatus("LinesToTerrain: Zusammenführung der Chunks ...");
+    console.log(`[PaintHeightmap] blending ${chunks.length} chunks`);
+    for (let i = 0; i < finalPixels.length; i += 1) {
+      const weight = weightAccum[i];
+      finalPixels[i] = weight > 0 ? Math.max(0, Math.min(1, finalPixels[i] / weight)) : 0.5;
+    }
+    const processed = this.applyFinalPostProcess(finalPixels, options);
+    return { width: this.worldWidth, height: this.worldHeight, pixels: processed };
+  }
+
+  buildChunkList() {
+    const chunkSize = TILE_SIZE;
+    const list = [];
+    TILE_OFFSETS.forEach(({ offsetX, offsetY }) => {
+      for (let y = offsetY; y < this.worldHeight; y += chunkSize) {
+        if (y + chunkSize <= 0) {
+          continue;
+        }
+        for (let x = offsetX; x < this.worldWidth; x += chunkSize) {
+          if (x + chunkSize <= 0) {
+            continue;
+          }
+          list.push({ originX: Math.floor(x), originY: Math.floor(y) });
+        }
+      }
+    });
+    return list;
+  }
+
+  buildChunkPayload(chunk, worldImage) {
+    const chunkSize = TILE_SIZE;
+    const start = performance.now();
+    const rgbPixels = new Float32Array(chunkSize * chunkSize * 3);
+    const data = worldImage.data;
+    const { originX, originY } = chunk;
+    for (let row = 0; row < chunkSize; row += 1) {
+      const worldY = originY + row;
+      const rowInBounds = worldY >= 0 && worldY < this.worldHeight;
+      for (let col = 0; col < chunkSize; col += 1) {
+        const worldX = originX + col;
+        const destIdx = (row * chunkSize + col) * 3;
+        if (!rowInBounds || worldX < 0 || worldX >= this.worldWidth) {
+          rgbPixels[destIdx] = 0;
+          rgbPixels[destIdx + 1] = 0;
+          rgbPixels[destIdx + 2] = 0;
+          continue;
+        }
+        const srcIdx = (worldY * this.worldWidth + worldX) * 4;
+        rgbPixels[destIdx] = data[srcIdx];
+        rgbPixels[destIdx + 1] = data[srcIdx + 1];
+        rgbPixels[destIdx + 2] = data[srcIdx + 2];
+      }
+    }
+    const duration = performance.now() - start;
+    return { payload: { width: chunkSize, height: chunkSize, rgbPixels }, buildDuration: duration };
+  }
+
+  blendChunkResult(result, chunk, finalPixels, weightAccum) {
+    const chunkWidth = result.width || TILE_SIZE;
+    const chunkHeight = result.height || TILE_SIZE;
+    const pixels = result.pixels;
+    const { originX, originY } = chunk;
+    for (let row = 0; row < chunkHeight; row += 1) {
+      const worldY = originY + row;
+      if (worldY < 0 || worldY >= this.worldHeight) continue;
+      const baseIdx = worldY * this.worldWidth;
+      const weightY = this.computeWeight(row, chunkHeight);
+      if (weightY <= 0) continue;
+      for (let col = 0; col < chunkWidth; col += 1) {
+        const worldX = originX + col;
+        if (worldX < 0 || worldX >= this.worldWidth) continue;
+        const weightX = this.computeWeight(col, chunkWidth);
+        if (weightX <= 0) continue;
+        const weight = weightX * weightY;
+        const idx = baseIdx + worldX;
+        const value = Math.max(0, Math.min(1, pixels[row * chunkWidth + col]));
+        finalPixels[idx] += value * weight;
+        weightAccum[idx] += weight;
+      }
+    }
+  }
+
+  computeWeight(position, size) {
+    if (size <= 1) {
+      return 1;
+    }
+    const center = (size - 1) / 2;
+    const normalized = (position - center) / center;
+    return Math.max(0, 1 - Math.min(1, Math.abs(normalized)));
+  }
+
+  applyFinalPostProcess(pixels, options) {
+    const result = new Float32Array(pixels);
+    if (options.normalizeResult) {
+      let min = Number.POSITIVE_INFINITY;
+      let max = Number.NEGATIVE_INFINITY;
+      for (let i = 0; i < result.length; i += 1) {
+        const value = result[i];
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      const range = max - min || 1;
+      for (let i = 0; i < result.length; i += 1) {
+        result[i] = (result[i] - min) / range;
+      }
+    }
+    const blurPercent = clampPercentValue(options.blurAmount ?? PAINT_HEIGHTMAP_DEFAULTS.blurAmount);
+    const blurFactor = Math.max(0, Math.min(1, blurPercent / 100));
+    if (blurFactor > 0) {
+      const blurred = this.blurFloat3x3(result, this.worldWidth, this.worldHeight);
+      for (let i = 0; i < result.length; i += 1) {
+        result[i] = result[i] * (1 - blurFactor) + blurred[i] * blurFactor;
+      }
+    }
+    return result;
+  }
+
+  blurFloat3x3(values, width, height) {
+    const result = new Float32Array(values.length);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        let sum = 0;
+        let samples = 0;
+        for (let ky = -1; ky <= 1; ky += 1) {
+          const ny = Math.min(height - 1, Math.max(0, y + ky));
+          for (let kx = -1; kx <= 1; kx += 1) {
+            const nx = Math.min(width - 1, Math.max(0, x + kx));
+            sum += values[ny * width + nx];
+            samples += 1;
+          }
+        }
+        result[y * width + x] = sum / samples;
+      }
+    }
+    return result;
+  }
+
+  reportChunkStatus(current, total, chunk, stage = "processing", meta = {}) {
+    const offsetLabel = chunk ? `@(${chunk.originX},${chunk.originY})` : "";
+    let message = "";
+    if (stage === "queued") {
+      message = `LinesToTerrain: Chunk ${current}/${total} gestartet ${offsetLabel}`;
+    } else if (stage === "completed") {
+      const completed = meta.completed || current;
+      message = `LinesToTerrain: Chunk ${current}/${total} abgeschlossen (${completed}/${total}) ${offsetLabel}`;
+    } else {
+      message = `LinesToTerrain: Chunk ${current}/${total} ${offsetLabel}`;
+    }
+    this.setStatus(message);
+    console.log(`[PaintHeightmap] ${message}`);
   }
 
   applySketchImage(imageData) {
@@ -573,29 +835,32 @@ class PaintCanvasController {
     const { width, height, data } = imageData;
     if (!width || !height) return;
     const display = this.ctx.createImageData(this.canvas.width, this.canvas.height);
-    const dataLayer = this.dataCtx.createImageData(this.dataCanvas.width, this.dataCanvas.height);
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
+    const renderCanvas = document.createElement("canvas");
+    renderCanvas.width = this.canvas.width;
+    renderCanvas.height = this.canvas.height;
+    const renderCtx = renderCanvas.getContext("2d");
+    const renderData = renderCtx.createImageData(this.canvas.width, this.canvas.height);
+    const targetWidth = Math.min(width, this.canvas.width);
+    const targetHeight = Math.min(height, this.canvas.height);
+    for (let y = 0; y < targetHeight; y += 1) {
+      for (let x = 0; x < targetWidth; x += 1) {
         const srcIdx = (y * width + x) * 4;
-        const r = data[srcIdx];
-        const g = data[srcIdx + 1];
-        const b = data[srcIdx + 2];
-        const { value, color } = this.interpretSketchPixel(r, g, b);
-        const dstIdx = (y * width + x) * 4;
+        const { color } = this.interpretSketchPixel(data[srcIdx], data[srcIdx + 1], data[srcIdx + 2]);
+        const dstIdx = (y * this.canvas.width + x) * 4;
         const rgb = this.hexToRgb(color);
         display.data[dstIdx] = rgb.r;
         display.data[dstIdx + 1] = rgb.g;
         display.data[dstIdx + 2] = rgb.b;
         display.data[dstIdx + 3] = 255;
-        const grayscale = Math.round(Math.max(0, Math.min(1, value)) * 255);
-        dataLayer.data[dstIdx] = grayscale;
-        dataLayer.data[dstIdx + 1] = grayscale;
-        dataLayer.data[dstIdx + 2] = grayscale;
-        dataLayer.data[dstIdx + 3] = 255;
+        renderData.data[dstIdx] = rgb.r;
+        renderData.data[dstIdx + 1] = rgb.g;
+        renderData.data[dstIdx + 2] = rgb.b;
+        renderData.data[dstIdx + 3] = 255;
       }
     }
     this.ctx.putImageData(display, 0, 0);
-    this.dataCtx.putImageData(dataLayer, 0, 0);
+    renderCtx.putImageData(renderData, 0, 0);
+    this.worldCtx.drawImage(renderCanvas, 0, 0, this.worldWidth, this.worldHeight);
     this.saveState();
   }
 
@@ -621,17 +886,6 @@ class PaintCanvasController {
     };
   }
 
-  extractColorPixels() {
-    const image = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height).data;
-    const rgb = new Float32Array(this.canvas.width * this.canvas.height * 3);
-    for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
-      rgb[i] = image[j];
-      rgb[i + 1] = image[j + 1];
-      rgb[i + 2] = image[j + 2];
-    }
-    return rgb;
-  }
-
   getPostProcessOptions() {
     const normalizeResult = !!(this.settings?.normalizeResult);
     const blurAmount = clampPercentValue(
@@ -640,66 +894,18 @@ class PaintCanvasController {
     return { normalizeResult, blurAmount };
   }
 
+  updateScaleFactors() {
+    this.worldScaleX = this.worldWidth / this.canvas.width;
+    this.worldScaleY = this.worldHeight / this.canvas.height;
+    this.worldScale = Math.max(1, (this.worldScaleX + this.worldScaleY) / 2);
+  }
+
   updateSetting(name, value) {
     if (!this.settings) {
       this.settings = { ...PAINT_HEIGHTMAP_DEFAULTS };
     }
     this.settings[name] = value;
-    if (name === "normalizeResult" || name === "blurAmount") {
-      this.reprocessCurrentSketch();
-    }
-  }
-
-  reprocessCurrentSketch() {
-    if (!this.dataCanvas.width || !this.dataCanvas.height) {
-      return;
-    }
-    const rgbPixels = this.extractColorPixels();
-    if (!rgbPixels || !rgbPixels.length) {
-      return;
-    }
-    const payload = {
-      width: this.dataCanvas.width,
-      height: this.dataCanvas.height,
-      rgbPixels,
-      ...this.getPostProcessOptions(),
-    };
-    this.runInference(payload);
-  }
-
-  runInference(payload) {
-    if (!payload) return;
-    const job = { ...payload, ...this.getPostProcessOptions() };
-    queuePaintInference(this.nodeId, job, {
-      onStatus: (state) => {
-        if (state === "running") {
-          this.setStatus("LinesToTerrain: Berechnung ...");
-        } else if (state === "success") {
-          this.setStatus("LinesToTerrain: Aktualisiert");
-        } else if (state === "error") {
-          this.setStatus("LinesToTerrain: Fehler");
-        }
-      },
-      onComplete: (result) => {
-        this.updateModelPreview(result);
-        schedulePaintPreview(this.nodeId);
-      },
-    });
-  }
-
-  maybeAutoGenerate(settings) {
-    if (this.autoQueued || settings.generatedHeightmap) {
-      if (settings.generatedHeightmap) {
-        this.updateModelPreview(settings.generatedHeightmap);
-      }
-      return;
-    }
-    const data = settings.canvasData;
-    if (!data || !data.rgbPixels) {
-      return;
-    }
-    this.autoQueued = true;
-    this.runInference({ width: data.width, height: data.height, rgbPixels: data.rgbPixels });
+    this.markDirty("LinesToTerrain: Einstellungen geändert – Apply klicken");
   }
 
   setTool(tool) {
@@ -707,10 +913,12 @@ class PaintCanvasController {
     this.tool = tool;
     updateHeightmapSettings(this.nodeId, { tool });
     this.syncToolbar();
+    this.markDirty("LinesToTerrain: Werkzeug geändert – Apply klicken");
   }
 
   setBrushSize(size) {
     this.brushSize = size;
+    this.markDirty("LinesToTerrain: Pinselgröße geändert – Apply klicken");
   }
 
   syncToolbar() {
@@ -731,6 +939,28 @@ class PaintCanvasController {
     }
   }
 
+  markDirty(message) {
+    this.dirty = true;
+    this.updateApplyButton();
+    if (message) {
+      this.setStatus(message);
+      return;
+    }
+    if (!this.processingInference) {
+      this.setStatus("LinesToTerrain: Änderungen vorhanden – Apply klicken");
+    }
+  }
+
+  updateApplyButton() {
+    if (!this.applyButton) return;
+    this.applyButton.disabled = this.processingInference || !this.dirty;
+  }
+
+  handleApplyAction() {
+    if (this.processingInference || !this.dirty) return;
+    this.runTiledInference();
+  }
+
   updateInputPreview(dataUrl) {
     const el = document.getElementById(`paintInputImg-${this.nodeId}`);
     if (!el) return;
@@ -748,8 +978,8 @@ class PaintCanvasController {
       el.removeAttribute("src");
       return;
     }
-    const width = result.width || this.canvas.width;
-    const height = result.height || this.canvas.height;
+    const width = result.width || this.worldWidth;
+    const height = result.height || this.worldHeight;
     this.modelCanvas.width = width;
     this.modelCanvas.height = height;
     const ctx = this.modelCanvas.getContext("2d");
