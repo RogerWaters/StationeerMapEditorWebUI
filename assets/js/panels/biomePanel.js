@@ -218,8 +218,9 @@ export function syncBiomesPanel() {
 function syncRegionForm() {
   const list = webix.$$("biomeRegionList");
   const selectedId = list ? list.getSelectedId() : null;
+  const index = selectedId !== null && selectedId !== undefined ? parseInt(selectedId, 10) : 0;
   const regions = getBiomeRegions();
-  const region = selectedId !== null && regions[selectedId] ? regions[selectedId] : regions[0];
+  const region = regions[index] || regions[0];
   const setValue = (id, value) => {
     const view = webix.$$(id);
     if (view) {
@@ -241,9 +242,11 @@ function updateRegionField(key, value) {
   const list = webix.$$("biomeRegionList");
   const selectedId = list ? list.getSelectedId() : null;
   if (selectedId === null || selectedId === undefined) return;
+  const index = parseInt(selectedId, 10);
+  if (!Number.isFinite(index)) return;
   const regions = getBiomeRegions();
-  if (!regions[selectedId]) return;
-  const next = updateBiomeRegion(selectedId, { [key]: value });
+  if (!regions[index]) return;
+  const next = updateBiomeRegion(index, { [key]: value });
   if (list && next) {
     const label = key === "heightmapId" ? getHeightmapLabel(value) : list.getItem(selectedId).heightmapLabel;
     const item = { ...list.getItem(selectedId), heightmapLabel: label };
