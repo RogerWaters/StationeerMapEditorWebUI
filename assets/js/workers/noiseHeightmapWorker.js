@@ -116,8 +116,8 @@ function renderBiomes(tree, width, height) {
   };
   const assignment =
     settings.method === "inflation"
-      ? inflateContinents(buildSeeds(regionCount, settings.seed, width, height), width, height, settings, mulberry32(settings.seed || 1))
-      : buildVoronoi(buildSeeds(regionCount, settings.seed, width, height), width, height, settings);
+      ? inflateContinents(placeSeeds(regionCount, width, height, mulberry32(settings.seed || 1)), width, height, settings, mulberry32(settings.seed || 1))
+      : buildVoronoi(placeSeeds(regionCount, width, height, mulberry32(settings.seed || 1)), width, height, settings);
   const regionHeights = [];
   for (let i = 0; i < regionCount; i += 1) {
     const region = regions[i] || {};
