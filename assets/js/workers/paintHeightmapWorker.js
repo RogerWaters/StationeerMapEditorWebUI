@@ -250,6 +250,7 @@ async function loadModelWithProviders() {
       });
       const modelLoadStart = Date.now();
       await instance.load();
+      patchSessionDimensionChecks(instance.session);
       selectedProvider = provider;
       modelLoadDuration = Date.now() - modelLoadStart;
       self.postMessage({
@@ -270,6 +271,43 @@ async function loadModelWithProviders() {
   throw lastError || new Error("Keine Execution Provider verfügbar.");
 }
 
+function patchSessionDimensionChecks(session) {
+  if (!session || session.__paintDimensionChecksPatched) {
+    return;
+  }
+  const originalValidate = typeof session.validateInputTensorDims === "function" ? session.validateInputTensorDims : null;
+  if (originalValidate) {
+    session.validateInputTensorDims = function (expectedDims, actualDims, allowZero) {
+      const normalized =
+        Array.isArray(expectedDims) && expectedDims.length
+          ? expectedDims.map((entry) =>
+              Array.isArray(entry) ? entry.map((dim) => (dim == null ? 0 : dim)) : entry
+            )
+          : expectedDims;
+      return originalValidate.call(this, normalized, actualDims, allowZero);
+    };
+  }
+  const originalCompare = typeof session.compareTensorDims === "function" ? session.compareTensorDims : null;
+  if (originalCompare) {
+    session.compareTensorDims = function (expectedDims, actualDims, allowZero) {
+      if (!Array.isArray(expectedDims) || !Array.isArray(actualDims) || expectedDims.length !== actualDims.length) {
+        return originalCompare.call(this, expectedDims, actualDims, allowZero);
+      }
+      for (let i = 0; i < expectedDims.length; i += 1) {
+        const expected = expectedDims[i];
+        if (expected == null || expected === 0) {
+          continue;
+        }
+        if (expected !== actualDims[i]) {
+          return false;
+        }
+      }
+      return true;
+    };
+  }
+  session.__paintDimensionChecksPatched = true;
+}
+
 function ensureModel() {
   if (!modelPromise) {
     modelPromise = loadModelWithProviders().catch((error) => {
@@ -281,9 +319,8 @@ function ensureModel() {
 }
 
 async function runInferenceWithPrepared(model, prepared) {
-  const dims = [0, 0, 3];
+  const dims = [prepared.height, prepared.width, 3];
   const tensor = new model.ort.Tensor("float32", prepared.data, dims);
-  tensor.tensorLayout = "NHWC";
   const feeds = { "browser_input:0": tensor };
   const results = await model.session.run(feeds);
   const rgbTensor = results["browser_output:0"];
