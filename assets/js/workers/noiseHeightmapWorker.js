@@ -37,6 +37,8 @@ function renderJob(tree, width, height) {
       return wrapFloat(renderUpload(tree, width, height));
     case "continents":
       return renderContinents(tree.settings || {}, width, height);
+    case "biomes":
+      return renderBiomes(tree, width, height);
     default:
       throw new Error(`Unbekannter Job-Typ: ${tree.type}`);
   }
@@ -94,6 +96,48 @@ function renderUpload(tree, width, height) {
   const scaled = resampleSource(tree.source, width, height, mapping);
   applyUploadAdjustments(scaled, tree.settings || {});
   return scaled;
+}
+
+function renderBiomes(tree, width, height) {
+  const continents = tree.continents || {};
+  const regions = Array.isArray(tree.regions) ? tree.regions : [];
+  const regionCount = Math.max(0, Math.min(64, continents.continentCount || regions.length || 0));
+  if (regionCount === 0) {
+    return { kind: "rgba", data: floatsToBuffer(new Float32Array(width * height).fill(0), width, height) };
+  }
+  const settings = {
+    method: continents.method === "inflation" ? "inflation" : "voronoi",
+    continentCount: regionCount,
+    seed: clampInt(continents.seed, 0, Number.MAX_SAFE_INTEGER, 1),
+    voronoiJitter: clamp01(continents.voronoiJitter ?? 0),
+    voronoiRelaxIterations: clampInt(continents.voronoiRelaxIterations, 0, 5, 0),
+    inflationIrregularity: clamp01(continents.inflationIrregularity ?? 0.35),
+    inflationDrift: clamp01(continents.inflationDrift ?? 0.25),
+  };
+  const assignment =
+    settings.method === "inflation"
+      ? inflateContinents(buildSeeds(regionCount, settings.seed, width, height), width, height, settings, mulberry32(settings.seed || 1))
+      : buildVoronoi(buildSeeds(regionCount, settings.seed, width, height), width, height, settings);
+  const regionHeights = [];
+  for (let i = 0; i < regionCount; i += 1) {
+    const region = regions[i] || {};
+    let floats = new Float32Array(width * height);
+    if (region.heightmapJob) {
+      floats = renderFloatJob(region.heightmapJob, width, height);
+      if (!floats || floats.length !== width * height) {
+        floats = new Float32Array(width * height);
+      }
+    }
+    regionHeights.push({
+      pixels: floats,
+      blendRadius: clampInt(region.blendRadius, 0, 1024, 32),
+      blendFeather: clamp01(region.blendFeather ?? 0.5),
+      blendNoise: clamp01(region.blendNoise ?? 0),
+      blendNoiseScale: clamp01(region.blendNoiseScale ?? 0.5),
+    });
+  }
+  const output = blendRegions(assignment, regionHeights, width, height);
+  return { kind: "rgba", data: output };
 }
 
 function configureNoise(settings) {
@@ -632,6 +676,111 @@ function seedFallbackCell(
   return true;
 }
 
+function blendRegions(assignment, regions, width, height) {
+  const count = regions.length;
+  const size = width * height;
+  const dist = new Uint16Array(size);
+  dist.fill(0xffff);
+  const other = new Int16Array(size).fill(-1);
+  const queue = new Int32Array(size);
+  let head = 0;
+  let tail = 0;
+  const idx = (x, y) => y * width + x;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const centerIdx = idx(x, y);
+      const region = assignment[centerIdx];
+      const neighbor = findDifferentNeighbor(assignment, region, x, y, width, height);
+      if (neighbor === -1) continue;
+      dist[centerIdx] = 0;
+      other[centerIdx] = neighbor;
+      queue[tail++] = centerIdx;
+    }
+  }
+
+  while (head < tail) {
+    const current = queue[head++];
+    const region = assignment[current];
+    const settings = regions[region] || {};
+    const radius = settings.blendRadius || 0;
+    const currentDist = dist[current];
+    if (currentDist + 1 > radius) continue;
+    const cx = current % width;
+    const cy = Math.floor(current / width);
+    for (let i = 0; i < NEIGHBORS.length; i += 1) {
+      const nx = cx + NEIGHBORS[i].dx;
+      const ny = cy + NEIGHBORS[i].dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const nIdx = idx(nx, ny);
+      if (assignment[nIdx] !== region) continue;
+      if (dist[nIdx] <= currentDist + 1) continue;
+      dist[nIdx] = currentDist + 1;
+      other[nIdx] = other[current];
+      queue[tail++] = nIdx;
+    }
+  }
+
+  const out = new Uint8ClampedArray(size * 4);
+  let ptr = 0;
+  for (let i = 0; i < size; i += 1) {
+    const region = assignment[i];
+    const regSettings = regions[region] || {};
+    const primary = regSettings.pixels?.[i] ?? 0;
+    const radius = regSettings.blendRadius || 0;
+    const otherRegion = other[i];
+    let value = primary;
+    if (radius > 0 && otherRegion >= 0 && otherRegion < count) {
+      const d = dist[i];
+      if (d < radius) {
+        const secondary = regions[otherRegion]?.pixels?.[i] ?? primary;
+        const t = d / radius;
+        const feather = clamp01(regSettings.blendFeather ?? 0.5);
+        let w = smoothStep(customFeather(t, feather));
+        const noiseAmp = clamp01(regSettings.blendNoise ?? 0);
+        if (noiseAmp > 0) {
+          const scale = regSettings.blendNoiseScale || 0.5;
+          const x = i % width;
+          const y = Math.floor(i / width);
+          const n = hash2D(Math.floor(x * scale), Math.floor(y * scale), region + 17) - 0.5;
+          w = clamp01(w + n * noiseAmp);
+        }
+        value = secondary * (1 - w) + primary * w;
+      }
+    }
+    const c = Math.round(clamp01(value) * 255);
+    out[ptr++] = c;
+    out[ptr++] = c;
+    out[ptr++] = c;
+    out[ptr++] = 255;
+  }
+  return out;
+}
+
+function customFeather(t, feather) {
+  const f = clamp01(feather);
+  const exponent = 1 + (1 - f) * 2;
+  return Math.pow(clamp01(t), exponent);
+}
+
+function smoothStep(t) {
+  const x = clamp01(t);
+  return x * x * (3 - 2 * x);
+}
+
+function findDifferentNeighbor(assignment, region, x, y, width, height) {
+  const idx = y * width + x;
+  for (let i = 0; i < NEIGHBORS.length; i += 1) {
+    const nx = x + NEIGHBORS[i].dx;
+    const ny = y + NEIGHBORS[i].dy;
+    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+    const nIdx = ny * width + nx;
+    if (assignment[nIdx] !== region) {
+      return assignment[nIdx];
+    }
+  }
+  return -1;
+}
 function buildPalette(count, seed) {
   const palette = [];
   for (let i = 0; i < count; i += 1) {

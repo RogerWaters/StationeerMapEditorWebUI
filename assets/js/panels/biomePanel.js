@@ -4,6 +4,8 @@ import {
   projectState,
   updateBiomeRegion,
 } from "../state/projectState.js";
+import { schedulePreview } from "../services/previewService.js";
+import { buildBiomesPreviewJob } from "../services/biomePreviewBuilder.js";
 
 function section(title, notes = "") {
   return {
@@ -163,7 +165,7 @@ export function ensureBiomesPanel() {
         rows: [
           {
             template:
-              "<div style='padding:24px 24px 4px'><div class='section-title'>Preview</div><div class='notes'>Blending-Vorschau folgt.</div></div>",
+              "<div style='padding:24px 24px 4px'><div class='section-title'>Preview</div><div class='notes'>Blending-Vorschau in Weltauflösung.</div></div>",
             borderless: true,
             autoheight: true,
           },
@@ -174,7 +176,9 @@ export function ensureBiomesPanel() {
             gravity: 1,
             template: `
               <div class='noise-preview-wrapper combine-preview'>
-                <div class='combine-preview-placeholder'>Preview wird später ergänzt</div>
+                <div id='biomesPreviewStatus' class='noise-preview-status'>Noch keine Vorschau</div>
+                <img id='biomesPreviewImg' class='noise-preview-image' alt='Biomes preview' />
+                <div id='biomesPreviewMeta' class='noise-preview-status' style='bottom:12px; left:12px; top:auto;'>-</div>
               </div>
             `,
           },
@@ -208,6 +212,7 @@ export function syncBiomesPanel() {
     heightmapField.refresh();
   }
   syncRegionForm();
+  scheduleBiomesPreview();
 }
 
 function syncRegionForm() {
@@ -244,6 +249,7 @@ function updateRegionField(key, value) {
     const item = { ...list.getItem(selectedId), heightmapLabel: label };
     list.updateItem(selectedId, item);
   }
+  scheduleBiomesPreview();
 }
 
 function getHeightmapLabel(id) {
@@ -256,4 +262,20 @@ function syncRegionsWithContinents() {
   const regionCount = projectState.continents?.continentCount || 0;
   ensureBiomeRegions(regionCount);
   syncBiomesPanel();
+}
+
+function scheduleBiomesPreview() {
+  const size = projectState.spec.size || 512;
+  const metaEl = document.getElementById("biomesPreviewMeta");
+  if (metaEl) {
+    metaEl.textContent = `${size} x ${size}`;
+  }
+  schedulePreview({
+    nodeId: "biomes",
+    width: size,
+    height: size,
+    statusId: "biomesPreviewStatus",
+    imageId: "biomesPreviewImg",
+    buildJob: () => buildBiomesPreviewJob(),
+  });
 }
