@@ -91,8 +91,7 @@ export const BIOME_REGION_DEFAULTS = {
 export const BIOME_GLOBAL_DEFAULTS = {
   blendRadius: 32,
   blendFeather: 0.5,
-  blendNoise: 0.15,
-  blendNoiseScale: 0.5,
+  blendModHeightmapId: null,
 };
 
 export const CONTINENT_DEFAULTS = {

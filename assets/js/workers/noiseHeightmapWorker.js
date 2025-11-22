@@ -733,14 +733,12 @@ function blendRegions(assignment, regions, width, height, modulation) {
       const d = dist[i];
       if (d < radius) {
         const secondary = regions[otherRegion]?.pixels?.[i] ?? primary;
-        const t = d / radius;
+        const m = modulation ? clamp01(modulation[i] || 0.5) : 0.5;
+        const radiusScale = Math.max(0.35, 0.5 + m); // scale radius between ~0.35x und 1.5x
+        const effectiveRadius = Math.max(1, radius * radiusScale);
+        const t = d / effectiveRadius;
         const feather = clamp01(regSettings.blendFeather ?? 0.5);
         let w = smoothStep(customFeather(t, feather));
-        if (modulation) {
-          const m = clamp01(modulation[i] || 0);
-          const scale = 0.5 + m * 0.5; // scales w between 0.5x .. 1x
-          w = clamp01(w * scale);
-        }
         value = secondary * (1 - w) + primary * w;
       }
     }
