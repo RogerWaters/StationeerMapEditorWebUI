@@ -31,6 +31,8 @@ function heightmapOptions() {
   return opts;
 }
 
+const blendModOptions = () => heightmapOptions();
+
 export function ensureBiomesPanel() {
   const panelId = "panel-biomes";
   const workspace = webix.$$("workspaceArea");
@@ -124,35 +126,14 @@ export function ensureBiomesPanel() {
                     },
                     spacer(8),
                     {
-                      cols: [
-                        {
-                          view: "slider",
-                          id: "biomeField-blendNoise",
-                          label: "Noise Anteil",
-                          labelWidth: 140,
-                          value: 0.15,
-                          min: 0,
-                          max: 1,
-                          step: 0.01,
-                          on: {
-                            onChange: (value) => updateGlobalsField("blendNoise", value),
-                          },
-                        },
-                        { width: 12 },
-                        {
-                          view: "slider",
-                          id: "biomeField-blendNoiseScale",
-                          label: "Noise Scale",
-                          labelWidth: 120,
-                          value: 0.5,
-                          min: 0.1,
-                          max: 4,
-                          step: 0.05,
-                          on: {
-                            onChange: (value) => updateGlobalsField("blendNoiseScale", value),
-                          },
-                        },
-                      ],
+                      view: "combo",
+                      id: "biomeField-blendModHeightmapId",
+                      label: "Blend Heightmap",
+                      labelWidth: 140,
+                      options: blendModOptions(),
+                      on: {
+                        onChange: (value) => updateGlobalsField("blendModHeightmapId", value || null),
+                      },
                     },
                   ],
                 },
@@ -214,6 +195,11 @@ export function syncBiomesPanel() {
     heightmapField.define("options", heightmapOptions());
     heightmapField.refresh();
   }
+  const blendModField = webix.$$("biomeField-blendModHeightmapId");
+  if (blendModField) {
+    blendModField.define("options", blendModOptions());
+    blendModField.refresh();
+  }
   syncRegionForm();
   syncGlobalBlendFields();
   scheduleBiomesPreview();
@@ -238,8 +224,6 @@ function syncRegionForm() {
     setValue("biomeField-heightmap", region.heightmapId || "");
     setValue("biomeField-blendRadius", region.blendRadius ?? 32);
     setValue("biomeField-blendFeather", region.blendFeather ?? 0.5);
-    setValue("biomeField-blendNoise", region.blendNoise ?? 0.15);
-    setValue("biomeField-blendNoiseScale", region.blendNoiseScale ?? 0.5);
   }
 }
 
@@ -278,8 +262,7 @@ function syncGlobalBlendFields() {
   };
   setValue("biomeField-blendRadius", globals.blendRadius ?? 32);
   setValue("biomeField-blendFeather", globals.blendFeather ?? 0.5);
-  setValue("biomeField-blendNoise", globals.blendNoise ?? 0.15);
-  setValue("biomeField-blendNoiseScale", globals.blendNoiseScale ?? 0.5);
+  setValue("biomeField-blendModHeightmapId", globals.blendModHeightmapId || "");
 }
 
 function getHeightmapLabel(id) {

@@ -132,11 +132,10 @@ function renderBiomes(tree, width, height) {
       pixels: floats,
       blendRadius: clampInt(region.blendRadius, 0, 1024, 32),
       blendFeather: clamp01(region.blendFeather ?? 0.5),
-      blendNoise: clamp01(region.blendNoise ?? 0),
-      blendNoiseScale: clamp01(region.blendNoiseScale ?? 0.5),
     });
   }
-  const output = blendRegions(assignment, regionHeights, width, height);
+  const modulation = tree.modHeightmapJob ? renderFloatJob(tree.modHeightmapJob, width, height) : null;
+  const output = blendRegions(assignment, regionHeights, width, height, modulation);
   return { kind: "rgba", data: output };
 }
 
@@ -676,7 +675,7 @@ function seedFallbackCell(
   return true;
 }
 
-function blendRegions(assignment, regions, width, height) {
+function blendRegions(assignment, regions, width, height, modulation) {
   const count = regions.length;
   const size = width * height;
   const dist = new Uint16Array(size);
@@ -737,13 +736,10 @@ function blendRegions(assignment, regions, width, height) {
         const t = d / radius;
         const feather = clamp01(regSettings.blendFeather ?? 0.5);
         let w = smoothStep(customFeather(t, feather));
-        const noiseAmp = clamp01(regSettings.blendNoise ?? 0);
-        if (noiseAmp > 0) {
-          const scale = regSettings.blendNoiseScale || 0.5;
-          const x = i % width;
-          const y = Math.floor(i / width);
-          const n = hash2D(Math.floor(x * scale), Math.floor(y * scale), region + 17) - 0.5;
-          w = clamp01(w + n * noiseAmp);
+        if (modulation) {
+          const m = clamp01(modulation[i] || 0);
+          const scale = 0.5 + m * 0.5; // scales w between 0.5x .. 1x
+          w = clamp01(w * scale);
         }
         value = secondary * (1 - w) + primary * w;
       }

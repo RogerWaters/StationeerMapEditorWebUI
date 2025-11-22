@@ -6,6 +6,13 @@ export function buildBiomesPreviewJob() {
   const regionCount = continents.continentCount || 0;
   const regions = ensureBiomeRegions(regionCount);
   const globals = getBiomeGlobals();
+  let modJob = null;
+  if (globals.blendModHeightmapId) {
+    const job = buildPreviewTree(globals.blendModHeightmapId);
+    if (job.ok) {
+      modJob = job.job;
+    }
+  }
   const regionJobs = regions.map((region) => {
     let heightmapJob = null;
     if (region.heightmapId) {
@@ -30,6 +37,7 @@ export function buildBiomesPreviewJob() {
       type: "biomes",
       continents,
       regions: regionJobs,
+      modHeightmapJob: modJob,
     },
   };
 }
