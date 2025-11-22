@@ -150,12 +150,10 @@ function buildFormElements(node) {
       view: "slider",
       name: "brushSize",
       id: getFieldId(node.id, "brushSize"),
-      label: "Brush Size",
-      value: values.brushSize || 2,
-      min: 1,
-      max: 10,
-      step: 0.25,
-      title: values.brushSize ? `${values.brushSize}px` : "2px",
+      hidden: true,
+      disabled: true,
+      height: 1,
+      label: "",
     },
     {
       view: "checkbox",
@@ -182,9 +180,27 @@ function buildCanvasTemplate(nodeId) {
   return `
     <div class="paint-panel-body" id="paintPanel-${nodeId}">
       <div class="paint-toolbar" id="paintToolbar-${nodeId}">
-        <button type="button" class="paint-tool" data-tool="peak">▲ Peak</button>
-        <button type="button" class="paint-tool" data-tool="valley">▼ Valley</button>
-        <button type="button" class="paint-tool" data-tool="eraser">⏹ Eraser</button>
+        <div class="paint-toolbar-group">
+          <label class="paint-toolbar-label" for="paintMaterial-${nodeId}">Material</label>
+          <select id="paintMaterial-${nodeId}" class="paint-select" data-role="material">
+            <option value="peak">Peak (Rot)</option>
+            <option value="valley">Valley (Blau)</option>
+            <option value="eraser">Erase (Schwarz)</option>
+          </select>
+        </div>
+        <div class="paint-toolbar-group">
+          <label class="paint-toolbar-label" for="paintTool-${nodeId}">Tool</label>
+          <select id="paintTool-${nodeId}" class="paint-select" data-role="tool">
+            <option value="brush">Brush</option>
+            <option value="fill">Fill</option>
+            <option value="rectangle">Rechteck</option>
+            <option value="ellipse">Ellipse</option>
+          </select>
+        </div>
+        <div class="paint-toolbar-group" data-role="brush-size-group">
+          <label class="paint-toolbar-label" for="paintBrushSize-${nodeId}">Brush Size</label>
+          <input id="paintBrushSize-${nodeId}" class="paint-input" type="number" min="1" max="10" step="0.25" data-role="brush-size" />
+        </div>
         <div class="paint-toolbar-spacer"></div>
         <button type="button" class="paint-tool paint-tool-clear" data-action="clear">❌ Clear</button>
         <button type="button" class="paint-tool paint-tool-apply" data-action="apply">▶ Apply</button>
@@ -290,7 +306,7 @@ function handleFormChange(nodeId, name, rawValue) {
     const numeric = parseFloat(rawValue);
     const brush = Number.isFinite(numeric) ? numeric : 2;
     updateHeightmapSettings(nodeId, { brushSize: brush });
-    updateSliderTooltip(getFieldId(nodeId, "brushSize"), `${brush}px`);
+    updateSliderTooltip(getFieldId(nodeId, "brushSize"), `${brush}px (world)`);
     const controller = controllers.get(nodeId);
     if (controller) {
       controller.setBrushSize(brush);
@@ -355,7 +371,10 @@ class PaintCanvasController {
     this.canvas = canvas;
     this.host = host;
     this.ctx = canvas.getContext("2d");
-    this.tool = "peak";
+    this.paintMode = PAINT_HEIGHTMAP_DEFAULTS.paintMode || "brush";
+    this.paintMaterial = PAINT_HEIGHTMAP_DEFAULTS.paintMaterial || "peak";
+    this.tool = this.paintMaterial;
+    this.shapeType = PAINT_HEIGHTMAP_DEFAULTS.shapeType || "rectangle";
     this.brushSize = PAINT_HEIGHTMAP_DEFAULTS.brushSize;
     this.statusEl = document.getElementById(`paintStatus-${node.id}`);
     this.modelCanvas = document.createElement("canvas");
@@ -363,6 +382,8 @@ class PaintCanvasController {
     const { width, height } = getWorldCanvasSize();
     this.worldWidth = width;
     this.worldHeight = height;
+    this.canvas.width = width;
+    this.canvas.height = height;
     this.worldCanvas = document.createElement("canvas");
     this.worldCanvas.width = width;
     this.worldCanvas.height = height;
@@ -372,6 +393,8 @@ class PaintCanvasController {
     this.dirty = false;
     this.processingInference = false;
     this.applyButton = null;
+    this.shapeStart = null;
+    this.shapePreviewBase = null;
     this.attachToolbar();
     this.attachEvents();
     this.resetLayers();
@@ -384,6 +407,8 @@ class PaintCanvasController {
     if (width !== this.worldWidth || height !== this.worldHeight) {
       this.worldWidth = width;
       this.worldHeight = height;
+      this.canvas.width = width;
+      this.canvas.height = height;
       this.worldCanvas.width = width;
       this.worldCanvas.height = height;
       this.worldCtx = this.worldCanvas.getContext("2d", { willReadFrequently: true });
@@ -391,7 +416,10 @@ class PaintCanvasController {
       this.resetLayers();
     }
     this.settings = { ...settings };
-    this.tool = settings.tool || "peak";
+    this.paintMaterial = settings.paintMaterial || settings.tool || "peak";
+    this.paintMode = settings.paintMode || "brush";
+    this.shapeType = settings.shapeType || "rectangle";
+    this.tool = this.paintMode === "brush" ? this.paintMaterial : this.paintMode;
     this.brushSize = settings.brushSize || PAINT_HEIGHTMAP_DEFAULTS.brushSize;
     this.syncToolbar();
     if (settings.canvasData?.displayUrl) {
@@ -415,14 +443,28 @@ class PaintCanvasController {
   attachToolbar() {
     this.toolbar = document.getElementById(`paintToolbar-${this.nodeId}`);
     if (!this.toolbar) return;
+    this.materialSelect = this.toolbar.querySelector("[data-role='material']");
+    this.toolSelect = this.toolbar.querySelector("[data-role='tool']");
+    this.brushSizeInput = this.toolbar.querySelector("[data-role='brush-size']");
+    this.brushSizeGroup = this.toolbar.querySelector("[data-role='brush-size-group']");
+    this.toolbar.addEventListener("change", (event) => {
+      const target = event.target;
+      const role = target?.getAttribute("data-role");
+      if (role === "material") {
+        this.setMaterial(target.value);
+      } else if (role === "tool") {
+        this.setToolMode(target.value);
+      } else if (role === "brush-size") {
+        const numeric = parseFloat(target.value);
+        const size = Number.isFinite(numeric) ? numeric : this.brushSize;
+        this.setBrushSize(size);
+      }
+    });
     this.toolbar.addEventListener("click", (event) => {
       const target = event.target.closest("button");
       if (!target) return;
-      const tool = target.getAttribute("data-tool");
       const action = target.getAttribute("data-action");
-      if (tool && TOOL_CONFIG[tool]) {
-        this.setTool(tool);
-      } else if (action === "clear") {
+      if (action === "clear") {
         this.clearCanvas();
       } else if (action === "apply") {
         this.handleApplyAction();
@@ -442,9 +484,25 @@ class PaintCanvasController {
 
   handlePointerDown(event) {
     event.preventDefault();
-    this.isDrawing = true;
     const displayPoint = this.getRelativePosition(event);
     const worldPoint = this.displayToWorld(displayPoint);
+    if (this.paintMode === "fill") {
+      const changed = this.handleFill(worldPoint);
+      this.isDrawing = false;
+      this.lastPoint = null;
+      if (changed) {
+        this.saveState();
+      }
+      return;
+    }
+    if (this.paintMode === "shape") {
+      this.isDrawing = true;
+      this.shapeStart = worldPoint;
+      this.captureShapePreviewBase();
+      this.renderShapePreview(worldPoint, worldPoint, this.shapeType === "ellipse");
+      return;
+    }
+    this.isDrawing = true;
     this.lastPoint = worldPoint;
     this.drawPoint(worldPoint);
   }
@@ -453,6 +511,11 @@ class PaintCanvasController {
     if (!this.isDrawing) return;
     const displayPoint = this.getRelativePosition(event);
     const point = this.displayToWorld(displayPoint);
+    if (this.paintMode === "shape") {
+      this.renderShapePreview(this.shapeStart || point, point, this.shapeType === "ellipse");
+      this.lastPoint = point;
+      return;
+    }
     this.drawLine(this.lastPoint, point);
     this.lastPoint = point;
   }
@@ -460,6 +523,13 @@ class PaintCanvasController {
   handlePointerUp(event) {
     if (!this.isDrawing) return;
     event.preventDefault();
+    if (this.paintMode === "shape" && this.shapeStart) {
+      const displayPoint = this.getRelativePosition(event);
+      const worldPoint = this.displayToWorld(displayPoint);
+      this.commitShape(this.shapeStart, worldPoint, this.shapeType === "ellipse");
+      this.shapeStart = null;
+      this.shapePreviewBase = null;
+    }
     this.isDrawing = false;
     this.lastPoint = null;
     this.saveState();
@@ -478,20 +548,22 @@ class PaintCanvasController {
       this.drawPoint(to);
       return;
     }
-    const color = TOOL_CONFIG[this.tool].color;
+    const color = this.getActiveColor();
+    const displayBrush = Math.max(0.5, this.brushSize / this.worldScaleX);
+    const worldBrush = Math.max(1, this.brushSize);
     const displayFrom = this.worldToDisplay(from);
     const displayTo = this.worldToDisplay(to);
-    this.renderStroke(this.ctx, displayFrom, displayTo, this.brushSize, color);
-    const worldBrush = Math.max(1, this.brushSize * this.worldScale);
+    this.renderStroke(this.ctx, displayFrom, displayTo, displayBrush, color);
     this.renderStroke(this.worldCtx, from, to, worldBrush, color);
   }
 
   drawPoint(point) {
     if (!point) return;
-    const color = TOOL_CONFIG[this.tool].color;
+    const color = this.getActiveColor();
+    const displayBrush = Math.max(0.5, this.brushSize / this.worldScaleX);
+    const worldBrush = Math.max(1, this.brushSize);
     const displayPoint = this.worldToDisplay(point);
-    const worldBrush = Math.max(1, this.brushSize * this.worldScale);
-    this.renderDot(this.ctx, displayPoint, this.brushSize, color);
+    this.renderDot(this.ctx, displayPoint, displayBrush, color);
     this.renderDot(this.worldCtx, point, worldBrush, color);
   }
 
@@ -526,6 +598,211 @@ class PaintCanvasController {
       x: point.x / this.worldScaleX,
       y: point.y / this.worldScaleY,
     };
+  }
+
+  refreshDisplayFromWorld() {
+    this.ctx.save();
+    this.ctx.imageSmoothingEnabled = true;
+    if (this.ctx.imageSmoothingQuality) {
+      this.ctx.imageSmoothingQuality = "high";
+    }
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.drawImage(this.worldCanvas, 0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.restore();
+  }
+
+  handleFill(worldPoint) {
+    if (!worldPoint) return false;
+    const color = this.hexToRgb(this.getActiveColor());
+    const changed = this.floodFillWorld(worldPoint, color);
+    if (changed) {
+      this.refreshDisplayFromWorld();
+    }
+    return changed;
+  }
+
+  floodFillWorld(worldPoint, fillColor) {
+    const x = Math.floor(worldPoint.x);
+    const y = Math.floor(worldPoint.y);
+    if (x < 0 || x >= this.worldWidth || y < 0 || y >= this.worldHeight) {
+      return false;
+    }
+    const imageData = this.worldCtx.getImageData(0, 0, this.worldWidth, this.worldHeight);
+    const data = imageData.data;
+    const startIdx = (y * this.worldWidth + x) * 4;
+    const startColor = {
+      r: data[startIdx],
+      g: data[startIdx + 1],
+      b: data[startIdx + 2],
+      a: data[startIdx + 3],
+    };
+    if (this.colorsClose(startColor, fillColor, 0)) {
+      return false;
+    }
+    const tolerance = 5;
+    const visited = new Uint8Array(this.worldWidth * this.worldHeight);
+    const stack = [y * this.worldWidth + x];
+    while (stack.length) {
+      const idx = stack.pop();
+      if (visited[idx]) continue;
+      visited[idx] = 1;
+      const base = idx * 4;
+      const current = {
+        r: data[base],
+        g: data[base + 1],
+        b: data[base + 2],
+        a: data[base + 3],
+      };
+      if (!this.colorsClose(current, startColor, tolerance)) {
+        continue;
+      }
+      data[base] = fillColor.r;
+      data[base + 1] = fillColor.g;
+      data[base + 2] = fillColor.b;
+      data[base + 3] = 255;
+      const px = idx % this.worldWidth;
+      const py = (idx - px) / this.worldWidth;
+      if (px > 0) stack.push(idx - 1);
+      if (px + 1 < this.worldWidth) stack.push(idx + 1);
+      if (py > 0) stack.push(idx - this.worldWidth);
+      if (py + 1 < this.worldHeight) stack.push(idx + this.worldWidth);
+    }
+    this.worldCtx.putImageData(imageData, 0, 0);
+    return true;
+  }
+
+  captureShapePreviewBase() {
+    try {
+      this.shapePreviewBase = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+    } catch (error) {
+      this.shapePreviewBase = null;
+    }
+  }
+
+  restoreShapePreviewBase() {
+    if (this.shapePreviewBase) {
+      this.ctx.putImageData(this.shapePreviewBase, 0, 0);
+      return true;
+    }
+    this.refreshDisplayFromWorld();
+    return false;
+  }
+
+  renderShapePreview(start, end, asEllipse) {
+    if (!start || !end) return;
+    this.restoreShapePreviewBase();
+    const color = this.getActiveColor();
+    const a = this.worldToDisplay(start);
+    const b = this.worldToDisplay(end);
+    const rect = this.normalizeRect(a, b);
+    const displayLineWidth = Math.max(0.5, this.brushSize / this.worldScaleX);
+    const aligned = this.alignRectForStroke(rect, displayLineWidth);
+    this.ctx.save();
+    this.ctx.strokeStyle = color;
+    this.ctx.setLineDash([6, 4]);
+    this.ctx.lineWidth = displayLineWidth;
+    this.ctx.lineJoin = "round";
+    this.ctx.lineCap = "round";
+    this.ctx.beginPath();
+    if (asEllipse) {
+      this.ctx.ellipse(aligned.x + aligned.w / 2, aligned.y + aligned.h / 2, aligned.w / 2, aligned.h / 2, 0, 0, Math.PI * 2);
+    } else {
+      this.ctx.rect(aligned.x, aligned.y, aligned.w, aligned.h);
+    }
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
+  commitShape(start, end, asEllipse) {
+    if (!start || !end) return;
+    const color = this.getActiveColor();
+    const rect = this.normalizeRect(start, end);
+    this.drawShapeOnWorld(rect, color, asEllipse);
+    this.drawShapeOnDisplay(rect, color, asEllipse);
+    this.shapePreviewBase = null;
+  }
+
+  drawShapeOnWorld(rect, color, asEllipse) {
+    if (!rect) return;
+    const worldLineWidth = Math.max(1, this.brushSize);
+    const aligned = this.alignRectForStroke(rect, worldLineWidth);
+    this.worldCtx.save();
+    this.worldCtx.strokeStyle = color;
+    this.worldCtx.lineWidth = worldLineWidth;
+    this.worldCtx.lineJoin = "round";
+    this.worldCtx.lineCap = "round";
+    this.worldCtx.beginPath();
+    if (asEllipse) {
+      this.worldCtx.ellipse(aligned.x + aligned.w / 2, aligned.y + aligned.h / 2, aligned.w / 2, aligned.h / 2, 0, 0, Math.PI * 2);
+    } else {
+      this.worldCtx.rect(aligned.x, aligned.y, aligned.w, aligned.h);
+    }
+    this.worldCtx.stroke();
+    this.worldCtx.restore();
+  }
+
+  drawShapeOnDisplay(rect, color, asEllipse) {
+    if (!rect) return;
+    const a = this.worldToDisplay({ x: rect.x, y: rect.y });
+    const b = this.worldToDisplay({ x: rect.x + rect.w, y: rect.y + rect.h });
+    const dispRect = this.normalizeRect(a, b);
+    const displayLineWidth = Math.max(0.5, this.brushSize / this.worldScaleX);
+    const aligned = this.alignRectForStroke(dispRect, displayLineWidth);
+    this.ctx.save();
+    this.ctx.strokeStyle = color;
+    this.ctx.setLineDash([]);
+    this.ctx.lineWidth = displayLineWidth;
+    this.ctx.lineJoin = "round";
+    this.ctx.lineCap = "round";
+    this.ctx.beginPath();
+    if (asEllipse) {
+      this.ctx.ellipse(
+        aligned.x + aligned.w / 2,
+        aligned.y + aligned.h / 2,
+        aligned.w / 2,
+        aligned.h / 2,
+        0,
+        0,
+        Math.PI * 2
+      );
+    } else {
+      this.ctx.rect(aligned.x, aligned.y, aligned.w, aligned.h);
+    }
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
+  alignRectForStroke(rect, lineWidth) {
+    const offset = lineWidth % 2 === 0 ? 0 : 0.5;
+    const x = Math.round(rect.x) + offset;
+    const y = Math.round(rect.y) + offset;
+    const w = Math.max(lineWidth, Math.round(rect.w));
+    const h = Math.max(lineWidth, Math.round(rect.h));
+    return { x, y, w, h };
+  }
+
+  normalizeRect(a, b) {
+    const x1 = a?.x ?? 0;
+    const y1 = a?.y ?? 0;
+    const x2 = b?.x ?? 0;
+    const y2 = b?.y ?? 0;
+    const x = Math.min(x1, x2);
+    const y = Math.min(y1, y2);
+    return {
+      x,
+      y,
+      w: Math.abs(x2 - x1),
+      h: Math.abs(y2 - y1),
+    };
+  }
+
+  colorsClose(a, b, tolerance = 0) {
+    const tol = Math.max(0, tolerance);
+    return (
+      Math.abs((a?.r ?? 0) - (b?.r ?? 0)) <= tol &&
+      Math.abs((a?.g ?? 0) - (b?.g ?? 0)) <= tol &&
+      Math.abs((a?.b ?? 0) - (b?.b ?? 0)) <= tol
+    );
   }
 
   clearCanvas() {
@@ -604,7 +881,10 @@ class PaintCanvasController {
         displayUrl: dataUrl,
       },
       brushSize: this.brushSize,
-      tool: this.tool,
+      tool: this.paintMaterial,
+      paintMode: this.paintMode,
+      paintMaterial: this.paintMaterial,
+      shapeType: this.shapeType,
     });
     this.markDirty("LinesToTerrain: Zeichnung geändert – Apply klicken");
   }
@@ -647,10 +927,25 @@ class PaintCanvasController {
     const worldImage = this.worldCtx.getImageData(0, 0, this.worldWidth, this.worldHeight);
     const finalPixels = new Float32Array(this.worldWidth * this.worldHeight);
     const weightAccum = new Float32Array(finalPixels.length);
+    const activeChunks = [];
     let completedChunks = 0;
-    const jobs = chunks.map((chunk, index) => {
+    chunks.forEach((chunk) => {
+      const { payload, buildDuration, hasContent } = this.buildChunkPayload(chunk, worldImage);
+      if (!hasContent) {
+        console.info(`[PaintHeightmap] skip empty chunk @(${chunk.originX},${chunk.originY})`);
+        return;
+      }
+      activeChunks.push({ chunk, payload, buildDuration });
+    });
+
+    if (!activeChunks.length) {
+      const flat = new Float32Array(this.worldWidth * this.worldHeight);
+      flat.fill(0.5);
+      return { width: this.worldWidth, height: this.worldHeight, pixels: flat };
+    }
+
+    const jobs = activeChunks.map(({ chunk, payload, buildDuration }, index) => {
       const chunkNumber = index + 1;
-      const { payload, buildDuration } = this.buildChunkPayload(chunk, worldImage);
       const jobPayload = { ...payload, ...options };
       const meta = {
         chunkNumber,
@@ -659,7 +954,7 @@ class PaintCanvasController {
         buildDuration,
       };
       console.info(`[PaintHeightmap] chunk payload build ${chunkNumber}/${chunks.length} ${buildDuration.toFixed(1)}ms`, meta);
-      this.reportChunkStatus(chunkNumber, chunks.length, chunk, "queued");
+      this.reportChunkStatus(chunkNumber, activeChunks.length, chunk, "queued");
       return runPaintModel(jobPayload, meta)
         .then((result) => {
           if (this.tiledInferenceToken !== token || !result) {
@@ -667,7 +962,7 @@ class PaintCanvasController {
           }
           this.blendChunkResult(result, chunk, finalPixels, weightAccum);
           completedChunks += 1;
-          this.reportChunkStatus(chunkNumber, chunks.length, chunk, "completed", { completed: completedChunks });
+          this.reportChunkStatus(chunkNumber, activeChunks.length, chunk, "completed", { completed: completedChunks });
         })
         .catch((error) => {
           console.error("Chunk Inferenz fehlgeschlagen", error);
@@ -679,12 +974,25 @@ class PaintCanvasController {
       return null;
     }
     this.setStatus("LinesToTerrain: Zusammenführung der Chunks ...");
-    console.log(`[PaintHeightmap] blending ${chunks.length} chunks`);
+    console.log(`[PaintHeightmap] blending ${activeChunks.length} chunks`);
+    const averaged = new Float32Array(finalPixels.length);
+    let hasData = false;
     for (let i = 0; i < finalPixels.length; i += 1) {
       const weight = weightAccum[i];
-      finalPixels[i] = weight > 0 ? Math.max(0, Math.min(1, finalPixels[i] / weight)) : 0.5;
+      if (weight > 0) {
+        averaged[i] = Math.max(0, Math.min(1, finalPixels[i] / weight));
+        hasData = true;
+      } else {
+        averaged[i] = Number.NaN;
+      }
     }
-    const processed = this.applyFinalPostProcess(finalPixels, options);
+    if (!hasData) {
+      averaged.fill(0.5);
+      return { width: this.worldWidth, height: this.worldHeight, pixels: averaged };
+    }
+    const { pixels: filled, filledMask } = this.fillMissingPixels(averaged, weightAccum, this.worldWidth, this.worldHeight, 0.5);
+    const softened = this.blurFilledPixels(filled, filledMask, this.worldWidth, this.worldHeight);
+    const processed = this.applyFinalPostProcess(softened, options);
     return { width: this.worldWidth, height: this.worldHeight, pixels: processed };
   }
 
@@ -713,6 +1021,7 @@ class PaintCanvasController {
     const rgbPixels = new Float32Array(chunkSize * chunkSize * 3);
     const data = worldImage.data;
     const { originX, originY } = chunk;
+    let hasContent = false;
     for (let row = 0; row < chunkSize; row += 1) {
       const worldY = originY + row;
       const rowInBounds = worldY >= 0 && worldY < this.worldHeight;
@@ -726,13 +1035,19 @@ class PaintCanvasController {
           continue;
         }
         const srcIdx = (worldY * this.worldWidth + worldX) * 4;
-        rgbPixels[destIdx] = data[srcIdx];
-        rgbPixels[destIdx + 1] = data[srcIdx + 1];
-        rgbPixels[destIdx + 2] = data[srcIdx + 2];
+        const r = data[srcIdx];
+        const g = data[srcIdx + 1];
+        const b = data[srcIdx + 2];
+        rgbPixels[destIdx] = r;
+        rgbPixels[destIdx + 1] = g;
+        rgbPixels[destIdx + 2] = b;
+        if (!hasContent && (r !== 0 || g !== 0 || b !== 0)) {
+          hasContent = true;
+        }
       }
     }
     const duration = performance.now() - start;
-    return { payload: { width: chunkSize, height: chunkSize, rgbPixels }, buildDuration: duration };
+    return { payload: { width: chunkSize, height: chunkSize, rgbPixels }, buildDuration: duration, hasContent };
   }
 
   blendChunkResult(result, chunk, finalPixels, weightAccum) {
@@ -790,6 +1105,88 @@ class PaintCanvasController {
       const blurred = this.blurFloat3x3(result, this.worldWidth, this.worldHeight);
       for (let i = 0; i < result.length; i += 1) {
         result[i] = result[i] * (1 - blurFactor) + blurred[i] * blurFactor;
+      }
+    }
+    return result;
+  }
+
+  fillMissingPixels(values, weights, width, height, fallback = 0.5) {
+    const total = width * height;
+    const result = new Float32Array(values);
+    const seedMask = new Uint8Array(total);
+    const filledMask = new Uint8Array(total);
+    const visited = new Uint8Array(total);
+    const queue = new Uint32Array(total);
+    let head = 0;
+    let tail = 0;
+    for (let i = 0; i < total; i += 1) {
+      if (weights[i] > 0 && Number.isFinite(values[i])) {
+        visited[i] = 1;
+        seedMask[i] = 1;
+        queue[tail] = i;
+        tail += 1;
+      }
+    }
+    if (tail === 0) {
+      result.fill(fallback);
+      filledMask.fill(1);
+      return { pixels: result, filledMask };
+    }
+    while (head < tail) {
+      const idx = queue[head];
+      head += 1;
+      const val = result[idx];
+      const x = idx % width;
+      const y = (idx - x) / width;
+      const left = idx - 1;
+      const right = idx + 1;
+      const up = idx - width;
+      const down = idx + width;
+      if (x > 0 && !visited[left]) {
+        visited[left] = 1;
+        result[left] = val;
+        if (!seedMask[left]) filledMask[left] = 1;
+        queue[tail] = left;
+        tail += 1;
+      }
+      if (x + 1 < width && !visited[right]) {
+        visited[right] = 1;
+        result[right] = val;
+        if (!seedMask[right]) filledMask[right] = 1;
+        queue[tail] = right;
+        tail += 1;
+      }
+      if (y > 0 && !visited[up]) {
+        visited[up] = 1;
+        result[up] = val;
+        if (!seedMask[up]) filledMask[up] = 1;
+        queue[tail] = up;
+        tail += 1;
+      }
+      if (y + 1 < height && !visited[down]) {
+        visited[down] = 1;
+        result[down] = val;
+        if (!seedMask[down]) filledMask[down] = 1;
+        queue[tail] = down;
+        tail += 1;
+      }
+    }
+    for (let i = 0; i < total; i += 1) {
+      if (!visited[i]) {
+        result[i] = fallback;
+        filledMask[i] = 1;
+      }
+    }
+    return { pixels: result, filledMask };
+  }
+
+  blurFilledPixels(values, filledMask, width, height) {
+    if (!filledMask || !filledMask.length) return values;
+    const blurred = this.blurFloat3x3(values, width, height);
+    const result = new Float32Array(values);
+    for (let i = 0; i < result.length; i += 1) {
+      if (filledMask[i]) {
+        result[i] = blurred[i];
       }
     }
     return result;
@@ -908,26 +1305,84 @@ class PaintCanvasController {
     this.markDirty("LinesToTerrain: Einstellungen geändert – Apply klicken");
   }
 
-  setTool(tool) {
-    if (!TOOL_CONFIG[tool]) return;
-    this.tool = tool;
-    updateHeightmapSettings(this.nodeId, { tool });
+  setMaterial(material) {
+    if (!TOOL_CONFIG[material]) return;
+    this.paintMaterial = material;
+    if (this.paintMode === "brush") {
+      this.tool = material;
+    }
+    updateHeightmapSettings(this.nodeId, {
+      tool: this.paintMaterial,
+      paintMode: this.paintMode,
+      paintMaterial: this.paintMaterial,
+      shapeType: this.shapeType,
+    });
+    this.syncToolbar();
+    this.markDirty("LinesToTerrain: Material geändert – Apply klicken");
+  }
+
+  setToolMode(mode) {
+    if (mode === "brush") {
+      this.paintMode = "brush";
+      this.tool = this.paintMaterial;
+    } else if (mode === "fill") {
+      this.paintMode = "fill";
+      this.tool = "fill";
+    } else if (mode === "rectangle" || mode === "ellipse") {
+      this.paintMode = "shape";
+      this.shapeType = mode;
+      this.tool = "shape";
+    } else {
+      return;
+    }
+    this.shapeStart = null;
+    updateHeightmapSettings(this.nodeId, {
+      tool: this.paintMaterial,
+      paintMode: this.paintMode,
+      paintMaterial: this.paintMaterial,
+      shapeType: this.shapeType,
+    });
     this.syncToolbar();
     this.markDirty("LinesToTerrain: Werkzeug geändert – Apply klicken");
   }
 
   setBrushSize(size) {
     this.brushSize = size;
+    updateHeightmapSettings(this.nodeId, { brushSize: size });
+    updateSliderTooltip(getFieldId(this.nodeId, "brushSize"), `${size}px (world)`);
+    this.syncToolbar();
     this.markDirty("LinesToTerrain: Pinselgröße geändert – Apply klicken");
   }
 
   syncToolbar() {
     if (!this.toolbar) return;
-    const buttons = this.toolbar.querySelectorAll("[data-tool]");
-    buttons.forEach((button) => {
-      const value = button.getAttribute("data-tool");
-      button.classList.toggle("is-active", value === this.tool);
-    });
+    if (this.materialSelect) {
+      this.materialSelect.value = this.paintMaterial || "peak";
+    }
+    if (this.toolSelect) {
+      const toolValue =
+        this.paintMode === "brush"
+          ? "brush"
+          : this.paintMode === "fill"
+            ? "fill"
+            : this.shapeType === "ellipse"
+              ? "ellipse"
+              : "rectangle";
+      this.toolSelect.value = toolValue;
+    }
+    const isFill = this.paintMode === "fill";
+    if (this.brushSizeInput) {
+      this.brushSizeInput.value = this.brushSize;
+      this.brushSizeInput.disabled = isFill;
+    }
+    if (this.brushSizeGroup) {
+      this.brushSizeGroup.classList.toggle("is-disabled", isFill);
+    }
+  }
+
+  getActiveColor() {
+    const key = this.paintMaterial || "peak";
+    return (TOOL_CONFIG[key] && TOOL_CONFIG[key].color) || "#ff0000";
   }
 
   setStatus(text) {

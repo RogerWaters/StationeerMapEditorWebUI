@@ -122,6 +122,38 @@ body.testing #app-root {
   margin-bottom: 12px;
 }
 
+.paint-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.paint-toolbar-label {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.paint-select,
+.paint-input {
+  background: #111827;
+  border: 0;
+  border-radius: 4px;
+  color: #f9fafb;
+  font-size: 12px;
+  padding: 6px 10px;
+  min-width: 120px;
+}
+
+.paint-input:disabled,
+.paint-select:disabled,
+.paint-toolbar-group.is-disabled {
+  opacity: 0.5;
+}
+
 .paint-tool {
   background: #1f2937;
   border: 1px solid #374151;
