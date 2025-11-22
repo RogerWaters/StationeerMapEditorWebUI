@@ -1,5 +1,5 @@
 import { buildPreviewTree } from "./previewBuilder.js";
-import { ensureBiomeRegions, getBiomeRegions, getContinentSettings } from "../state/projectState.js";
+import { ensureBiomeRegions, getBiomeRegions, getBiomeGlobals, getContinentSettings } from "../state/projectState.js";
 
 export function buildBiomesPreviewJob() {
   const continents = getContinentSettings();
