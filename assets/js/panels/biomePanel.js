@@ -3,6 +3,8 @@ import {
   getBiomeRegions,
   projectState,
   updateBiomeRegion,
+  updateBiomeGlobals,
+  getBiomeGlobals,
 } from "../state/projectState.js";
 import { schedulePreview } from "../services/previewService.js";
 import { buildBiomesPreviewJob } from "../services/biomePreviewBuilder.js";
@@ -103,7 +105,7 @@ export function ensureBiomesPanel() {
                       min: 0,
                       max: 256,
                       on: {
-                        onChange: (value) => updateRegionField("blendRadius", value),
+                        onChange: (value) => updateGlobalsField("blendRadius", value),
                       },
                     },
                     spacer(8),
@@ -117,7 +119,7 @@ export function ensureBiomesPanel() {
                       max: 1,
                       step: 0.01,
                       on: {
-                        onChange: (value) => updateRegionField("blendFeather", value),
+                        onChange: (value) => updateGlobalsField("blendFeather", value),
                       },
                     },
                     spacer(8),
@@ -133,7 +135,7 @@ export function ensureBiomesPanel() {
                           max: 1,
                           step: 0.01,
                           on: {
-                            onChange: (value) => updateRegionField("blendNoise", value),
+                            onChange: (value) => updateGlobalsField("blendNoise", value),
                           },
                         },
                         { width: 12 },
@@ -147,7 +149,7 @@ export function ensureBiomesPanel() {
                           max: 4,
                           step: 0.05,
                           on: {
-                            onChange: (value) => updateRegionField("blendNoiseScale", value),
+                            onChange: (value) => updateGlobalsField("blendNoiseScale", value),
                           },
                         },
                       ],
@@ -212,6 +214,7 @@ export function syncBiomesPanel() {
     heightmapField.refresh();
   }
   syncRegionForm();
+  syncGlobalBlendFields();
   scheduleBiomesPreview();
 }
 
@@ -253,6 +256,27 @@ function updateRegionField(key, value) {
     list.updateItem(selectedId, item);
   }
   scheduleBiomesPreview();
+}
+
+function updateGlobalsField(key, value) {
+  updateBiomeGlobals({ [key]: value });
+  syncGlobalBlendFields();
+  scheduleBiomesPreview();
+}
+
+function syncGlobalBlendFields() {
+  const globals = getBiomeGlobals();
+  const setValue = (id, value) => {
+    const view = webix.$$(id);
+    if (!view) return;
+    view.blockEvent();
+    view.setValue(value);
+    view.unblockEvent();
+  };
+  setValue("biomeField-blendRadius", globals.blendRadius ?? 32);
+  setValue("biomeField-blendFeather", globals.blendFeather ?? 0.5);
+  setValue("biomeField-blendNoise", globals.blendNoise ?? 0.15);
+  setValue("biomeField-blendNoiseScale", globals.blendNoiseScale ?? 0.5);
 }
 
 function getHeightmapLabel(id) {

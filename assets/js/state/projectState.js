@@ -86,6 +86,9 @@ export const PAINT_HEIGHTMAP_DEFAULTS = {
 
 export const BIOME_REGION_DEFAULTS = {
   heightmapId: null,
+};
+
+export const BIOME_GLOBAL_DEFAULTS = {
   blendRadius: 32,
   blendFeather: 0.5,
   blendNoise: 0.15,
@@ -110,6 +113,7 @@ export const projectState = {
     height: 512,
   },
   biomes: {
+    globals: { ...BIOME_GLOBAL_DEFAULTS },
     regions: [],
   },
   continents: { ...CONTINENT_DEFAULTS },
@@ -153,7 +157,7 @@ export function resetHeightmaps() {
 }
 
 export function resetBiomes() {
-  projectState.biomes = { regions: [] };
+  projectState.biomes = { globals: { ...BIOME_GLOBAL_DEFAULTS }, regions: [] };
 }
 
 export function resetContinents() {
@@ -384,10 +388,6 @@ function buildBiomeRegions(count) {
     regions.push({
       name: existing?.name || `Region ${i + 1}`,
       heightmapId: existing?.heightmapId ?? null,
-      blendRadius: Number.isFinite(existing?.blendRadius) ? existing.blendRadius : BIOME_REGION_DEFAULTS.blendRadius,
-      blendFeather: Number.isFinite(existing?.blendFeather) ? existing.blendFeather : BIOME_REGION_DEFAULTS.blendFeather,
-      blendNoise: Number.isFinite(existing?.blendNoise) ? existing.blendNoise : BIOME_REGION_DEFAULTS.blendNoise,
-      blendNoiseScale: Number.isFinite(existing?.blendNoiseScale) ? existing.blendNoiseScale : BIOME_REGION_DEFAULTS.blendNoiseScale,
     });
   }
   return regions;
@@ -412,4 +412,16 @@ export function updateBiomeRegion(index, updates) {
 
 export function getBiomeRegions() {
   return projectState.biomes.regions || [];
+}
+
+export function updateBiomeGlobals(updates) {
+  projectState.biomes.globals = {
+    ...projectState.biomes.globals,
+    ...updates,
+  };
+  return projectState.biomes.globals;
+}
+
+export function getBiomeGlobals() {
+  return projectState.biomes.globals || { ...BIOME_GLOBAL_DEFAULTS };
 }

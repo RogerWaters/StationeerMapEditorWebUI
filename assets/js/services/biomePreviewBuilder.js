@@ -5,6 +5,7 @@ export function buildBiomesPreviewJob() {
   const continents = getContinentSettings();
   const regionCount = continents.continentCount || 0;
   const regions = ensureBiomeRegions(regionCount);
+  const globals = getBiomeGlobals();
   const regionJobs = regions.map((region) => {
     let heightmapJob = null;
     if (region.heightmapId) {
@@ -17,10 +18,10 @@ export function buildBiomesPreviewJob() {
       name: region.name || "",
       heightmapId: region.heightmapId || null,
       heightmapJob,
-      blendRadius: coerce(region.blendRadius, 32),
-      blendFeather: clamp01(region.blendFeather, 0.5),
-      blendNoise: clamp01(region.blendNoise, 0.15),
-      blendNoiseScale: coerce(region.blendNoiseScale, 0.5),
+      blendRadius: coerce(globals.blendRadius, 32),
+      blendFeather: clamp01(globals.blendFeather, 0.5),
+      blendNoise: clamp01(globals.blendNoise, 0.15),
+      blendNoiseScale: coerce(globals.blendNoiseScale, 0.5),
     };
   });
   return {

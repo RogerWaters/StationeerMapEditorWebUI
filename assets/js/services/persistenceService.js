@@ -3,6 +3,7 @@ import {
   clampWorldHeight,
   ensureBiomeRegions,
   getBiomeRegions,
+  getBiomeGlobals,
   getContinentSettings,
   projectState,
   resetContinents,
@@ -84,7 +85,8 @@ function buildProjectXml(projectMeta, nodes) {
   const continentSettings = projectMeta.continents || {};
   lines.push(`  <Continents><![CDATA[${JSON.stringify(continentSettings)}]]></Continents>`);
   const biomeRegions = projectMeta.biomes?.regions || [];
-  lines.push(`  <Biomes><![CDATA[${JSON.stringify({ regions: biomeRegions })}]]></Biomes>`);
+  const biomeGlobals = projectMeta.biomes?.globals || {};
+  lines.push(`  <Biomes><![CDATA[${JSON.stringify({ regions: biomeRegions, globals: biomeGlobals })}]]></Biomes>`);
   nodes.forEach((node) => {
     lines.push(
       `  <Heightmap id="${escapeAttr(node.id)}" bucket="${escapeAttr(node.bucket)}" type="${escapeAttr(node.type)}" label="${escapeAttr(node.label)}" parent="${escapeAttr(node.parentId || "")}">`
@@ -234,7 +236,7 @@ export async function saveTerrainProject(onProgress) {
       twoD: projectState.counters.twoD || 1,
       threeD: projectState.counters.threeD || 1,
     },
-    biomes: { regions: getBiomeRegions() },
+    biomes: { regions: getBiomeRegions(), globals: getBiomeGlobals() },
     continents: getContinentSettings(),
   };
   const xml = buildProjectXml(projectMeta, nodesMeta);
@@ -286,10 +288,13 @@ export async function loadTerrainFromFile(file) {
   if (biomesNode && biomesNode.textContent) {
     try {
       const parsed = JSON.parse(biomesNode.textContent);
-      biomes = { regions: Array.isArray(parsed?.regions) ? parsed.regions : [] };
+      biomes = {
+        regions: Array.isArray(parsed?.regions) ? parsed.regions : [],
+        globals: parsed?.globals || {},
+      };
     } catch (error) {
       console.warn("Konnte Biome-Daten nicht parsen, nutze Defaults.", error);
-      biomes = { regions: [] };
+      biomes = { regions: [], globals: {} };
     }
   }
   const nextState = {
@@ -437,6 +442,7 @@ function applyLoadedState(nextState) {
   projectState.continents = sanitizeContinentSettings(nextState.continents || {});
   ensureBiomeRegions(nextState.biomes?.regions?.length || 0);
   projectState.biomes.regions = Array.isArray(nextState.biomes?.regions) ? nextState.biomes.regions : [];
+  projectState.biomes.globals = nextState.biomes?.globals || { ...projectState.biomes.globals };
   projectState.heightmaps.twoD = nextState.heightmaps.twoD || [];
   projectState.heightmaps.threeD = nextState.heightmaps.threeD || [];
 }
