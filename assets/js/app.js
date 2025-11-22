@@ -1,12 +1,14 @@
 import { defaultPanel } from "./panels/defaultPanel.js";
 import { ensureTemplatePanel, getPanelTemplate } from "./panels/templates.js";
 import { createWorldPanel, syncWorldPanelValues } from "./panels/worldPanel.js";
+import { ensureContinentsPanel, syncContinentsPanel } from "./panels/continentsPanel.js";
 import { ensureNoiseHeightmapPanel, syncNoiseHeightmapPanel } from "./panels/noiseHeightmapPanel.js";
 import { ensureCombineHeightmapPanel, syncCombineHeightmapPanel } from "./panels/combineHeightmapPanel.js";
 import { ensurePaintHeightmapPanel, syncPaintHeightmapPanel } from "./panels/paintHeightmapPanel.js";
 import { ensureUploadHeightmapPanel, syncUploadHeightmapPanel } from "./panels/uploadHeightmapPanel.js";
 import { registerHarness } from "./testing/harness.js";
 import { openNewWorldDialog } from "./ui/newWorldDialog.js";
+import { loadTerrainFromFile, saveTerrainProject } from "./services/persistenceService.js";
 import {
   buildNavigationTree,
   createHeightmap,
@@ -20,6 +22,8 @@ let saveButton;
 let heightmapAddMenu;
 let pendingAddBucket = null;
 let pendingParentId = null;
+let isSaving = false;
+let isLoading = false;
 
 export async function initApp(rootId = "app-root") {
   const container = document.getElementById(rootId) || document.body;
@@ -162,6 +166,12 @@ function updateWorkspace(nodeId) {
     workspace.setValue("panel-world");
     return;
   }
+  if (nodeId === "continents") {
+    const panelId = ensureContinentsPanel();
+    syncContinentsPanel();
+    workspace.setValue(panelId);
+    return;
+  }
   const heightmapEntry = getHeightmapById(nodeId);
   if (heightmapEntry && heightmapEntry.node.mapType === "noise") {
     const panelId = ensureNoiseHeightmapPanel(heightmapEntry.node);
@@ -226,16 +236,51 @@ function handleWorldFieldChange() {
   setSaveButtonState(true);
 }
 
-function handleLoadWorld() {
-  webix.alert("Dateiauswahl folgt hier – .terrain Dateien werden zukünftig geladen.");
+async function handleLoadWorld() {
+  if (isLoading) return;
+  const file = await pickTerrainFile();
+  if (!file) return;
+  isLoading = true;
+  setSaveButtonState(false);
+  webix.message("Lade Terrain Projekt ...");
+  try {
+    await loadTerrainFromFile(file);
+    refreshNavigationTree();
+    syncWorldPanelValues();
+    webix.message({ type: "success", text: `Projekt ${projectState.name} geladen.` });
+    setSaveButtonState(true);
+    selectNode("world");
+  } catch (error) {
+    console.error("Terrain Load fehlgeschlagen", error);
+    webix.alert({ type: "alert-error", text: `Terrain konnte nicht geladen werden: ${error?.message || error}` });
+    setSaveButtonState(true);
+  } finally {
+    isLoading = false;
+  }
 }
 
-function handleSaveWorld() {
+async function handleSaveWorld() {
   if (!projectState.loaded) {
     webix.message({ type: "error", text: "Kein Projekt zum Speichern." });
     return;
   }
-  webix.alert("Speichern als .terrain folgt – XML Export wird implementiert.");
+  if (isSaving) return;
+  isSaving = true;
+  setSaveButtonState(false);
+  webix.message("Speichere Terrain ...");
+  try {
+    const { blob, filename } = await saveTerrainProject((msg) =>
+      webix.message({ text: msg, expire: 1200, id: "terrain-progress" })
+    );
+    triggerDownload(blob, filename);
+    webix.message({ type: "success", text: `Gespeichert: ${filename}` });
+  } catch (error) {
+    console.error("Terrain Save fehlgeschlagen", error);
+    webix.alert({ type: "alert-error", text: `Terrain konnte nicht gespeichert werden: ${error?.message || error}` });
+  } finally {
+    isSaving = false;
+    setSaveButtonState(true);
+  }
 }
 
 function setSaveButtonState(enabled) {
@@ -334,6 +379,35 @@ function handleHeightmapCreation(mapType) {
   const node = createHeightmap(bucket, { mapType, parentId });
   refreshNavigationTree(false);
   selectNode(node.id);
+}
+
+function pickTerrainFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".terrain";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", () => {
+      const file = input.files && input.files.length ? input.files[0] : null;
+      input.remove();
+      resolve(file);
+    });
+    input.click();
+  });
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename || "world.terrain";
+  document.body.appendChild(anchor);
+  anchor.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    anchor.remove();
+  }, 50);
 }
 
 webix.ready(() => {

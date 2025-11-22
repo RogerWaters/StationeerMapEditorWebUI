@@ -84,6 +84,16 @@ export const PAINT_HEIGHTMAP_DEFAULTS = {
   generatedHeightmap: null,
 };
 
+export const CONTINENT_DEFAULTS = {
+  method: "voronoi",
+  continentCount: 5,
+  seed: 1337,
+  voronoiJitter: 0.35,
+  voronoiRelaxIterations: 1,
+  inflationIrregularity: 0.35,
+  inflationDrift: 0.25,
+};
+
 export const projectState = {
   loaded: false,
   name: "Kein Projekt",
@@ -91,6 +101,7 @@ export const projectState = {
     size: 4096,
     height: 512,
   },
+  continents: { ...CONTINENT_DEFAULTS },
   heightmaps: {
     twoD: [],
     threeD: [],
@@ -130,6 +141,10 @@ export function resetHeightmaps() {
   projectState.counters.threeD = 1;
 }
 
+export function resetContinents() {
+  projectState.continents = { ...CONTINENT_DEFAULTS };
+}
+
 export function createWorld(config) {
   projectState.loaded = true;
   projectState.name = sanitizeWorldName(config.worldName) || "Unbenannte Welt";
@@ -138,6 +153,7 @@ export function createWorld(config) {
     height: clampWorldHeight(config.worldHeight ?? WORLD_HEIGHT_LIMIT.min),
   };
   resetHeightmaps();
+  resetContinents();
   return { ...projectState };
 }
 
@@ -247,13 +263,17 @@ export function buildHeightmapBranch(type, parentId = null) {
 
 export function buildNavigationTree() {
   const worldLabel = projectState.name ? `World (${projectState.name})` : "World";
+  const continentsLabel =
+    projectState.continents?.continentCount && Number.isFinite(projectState.continents.continentCount)
+      ? `Kontinente (${projectState.continents.continentCount})`
+      : "Kontinente";
   return [
     {
       id: "world",
       value: worldLabel,
       open: true,
       data: [
-        { id: "continents", value: "Kontinente" },
+        { id: "continents", value: continentsLabel },
         { id: "biomes", value: "Biomes" },
         { id: "heightmap", value: "Heightmap Layer" },
       ],
@@ -301,4 +321,42 @@ export function updateHeightmapSettings(nodeId, updates) {
 
 if (typeof window !== "undefined") {
   window.projectState = projectState;
+}
+
+function clamp01(value, fallback = 0) {
+  const num = parseFloat(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(0, Math.min(1, num));
+}
+
+function clampInt(value, min, max, fallback) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+export function sanitizeContinentSettings(raw) {
+  const base = { ...CONTINENT_DEFAULTS, ...(raw || {}) };
+  return {
+    method: base.method === "inflation" ? "inflation" : "voronoi",
+    continentCount: clampInt(base.continentCount, 1, 64, CONTINENT_DEFAULTS.continentCount),
+    seed: clampInt(base.seed, 0, Number.MAX_SAFE_INTEGER, CONTINENT_DEFAULTS.seed),
+    voronoiJitter: clamp01(base.voronoiJitter, CONTINENT_DEFAULTS.voronoiJitter),
+    voronoiRelaxIterations: clampInt(base.voronoiRelaxIterations, 0, 5, CONTINENT_DEFAULTS.voronoiRelaxIterations),
+    inflationIrregularity: clamp01(base.inflationIrregularity, CONTINENT_DEFAULTS.inflationIrregularity),
+    inflationDrift: clamp01(base.inflationDrift, CONTINENT_DEFAULTS.inflationDrift),
+  };
+}
+
+export function updateContinentSettings(updates) {
+  const next = sanitizeContinentSettings({
+    ...projectState.continents,
+    ...(updates || {}),
+  });
+  projectState.continents = next;
+  return next;
+}
+
+export function getContinentSettings() {
+  return sanitizeContinentSettings(projectState.continents);
 }
