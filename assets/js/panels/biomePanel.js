@@ -198,14 +198,15 @@ export function syncBiomesPanel() {
   const list = webix.$$("biomeRegionList");
   if (list) {
     const data = regions.map((region, index) => ({
-      id: index,
+      id: `region-${index}`,
+      regionIndex: index,
       name: region.name || `Region ${index + 1}`,
       heightmapLabel: region.heightmapId ? getHeightmapLabel(region.heightmapId) : "Keine Heightmap",
     }));
     list.clearAll();
     list.parse(data);
     if (data.length) {
-      list.select(data[0].id);
+        list.select(data[0].id);
     }
   }
   const heightmapField = webix.$$("biomeField-heightmap");
@@ -220,8 +221,9 @@ export function syncBiomesPanel() {
 
 function syncRegionForm() {
   const list = webix.$$("biomeRegionList");
-  const selectedId = list ? list.getSelectedId() : null;
-  const index = selectedId !== null && selectedId !== undefined ? parseInt(selectedId, 10) : 0;
+  const selected = list ? list.getSelectedId() : null;
+  const selectedItem = list && selected ? list.getItem(selected.id || selected) : null;
+  const index = Number.isFinite(selectedItem?.regionIndex) ? selectedItem.regionIndex : 0;
   const regions = getBiomeRegions();
   const region = regions[index] || regions[0];
   const setValue = (id, value) => {
@@ -243,17 +245,18 @@ function syncRegionForm() {
 
 function updateRegionField(key, value) {
   const list = webix.$$("biomeRegionList");
-  const selectedId = list ? list.getSelectedId() : null;
-  if (selectedId === null || selectedId === undefined) return;
-  const index = parseInt(selectedId, 10);
+  const selected = list ? list.getSelectedId() : null;
+  if (!selected) return;
+  const item = list.getItem(selected.id || selected);
+  const index = Number.isFinite(item?.regionIndex) ? item.regionIndex : null;
   if (!Number.isFinite(index)) return;
   const regions = getBiomeRegions();
   if (!regions[index]) return;
   const next = updateBiomeRegion(index, { [key]: value });
   if (list && next) {
     const label = key === "heightmapId" ? getHeightmapLabel(value) : list.getItem(selectedId).heightmapLabel;
-    const item = { ...list.getItem(selectedId), heightmapLabel: label };
-    list.updateItem(selectedId, item);
+    const updated = { ...item, heightmapLabel: label };
+    list.updateItem(item.id, updated);
   }
   scheduleBiomesPreview();
 }
