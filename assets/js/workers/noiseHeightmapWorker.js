@@ -1,14 +1,35 @@
 import FastNoiseLite from "/vendor/FastNoiseLite.js";
 
 const noise = new FastNoiseLite();
+const IS_SUB_WORKER = typeof self !== "undefined" && self.name === "heightmap-sub";
+const ALLOW_PARALLEL_HEIGHTMAPS = !IS_SUB_WORKER && typeof Worker !== "undefined";
+let heightmapWorkerPool = null;
 
-self.onmessage = (event) => {
+// Handle dedicated heightmap render requests (used by parent worker for parallel heightmaps)
+if (typeof self !== "undefined") {
+  self.onmessage = async (event) => {
+    const data = event.data || {};
+    if (data.kind === "heightmap-render") {
+      try {
+        const floats = await renderFloatJob(data.tree, data.width, data.height);
+        self.postMessage({ jobId: data.jobId, width: data.width, height: data.height, floatBuffer: floats.buffer }, [floats.buffer]);
+      } catch (err) {
+        self.postMessage({ jobId: data.jobId, error: err?.message || String(err) });
+      }
+      return;
+    }
+    // Default path
+    await handleMainMessage(event);
+  };
+}
+
+async function handleMainMessage(event) {
   const { jobId, nodeId, width, height, tree, mode } = event.data || {};
   if (!jobId || !nodeId || !width || !height || !tree) {
     return;
   }
   try {
-    const result = renderJob(tree, width, height);
+    const result = await renderJob(tree, width, height);
     if (mode === "float") {
       if (!result || result.kind !== "float") {
         throw new Error("Float Mode unterstützt nur Heightmap-Jobs.");
@@ -25,14 +46,13 @@ self.onmessage = (event) => {
   } catch (error) {
     self.postMessage({ jobId, nodeId, error: error?.message || String(error) });
   }
-};
-
-function renderJob(tree, width, height) {
+}
+async function renderJob(tree, width, height) {
   switch (tree.type) {
     case "noise":
       return wrapFloat(renderNoise(tree.settings || {}, width, height));
     case "combine":
-      return wrapFloat(renderCombine(tree, width, height));
+      return wrapFloat(await renderCombine(tree, width, height));
     case "upload":
       return wrapFloat(renderUpload(tree, width, height));
     case "continents":
@@ -48,26 +68,51 @@ function wrapFloat(array) {
   return { kind: "float", data: array };
 }
 
-function renderFloatJob(tree, width, height) {
-  const result = renderJob(tree, width, height);
+async function renderFloatJob(tree, width, height) {
+  const result = await renderJob(tree, width, height);
   if (!result || result.kind !== "float") {
     throw new Error("Erwarte Heightmap-Daten.");
   }
   return result.data;
 }
 
-function renderFloatJobCached(tree, width, height, cache) {
+async function renderFloatJobCached(tree, width, height, cache, cacheKey) {
   const start = nowMs();
   if (!tree) {
     return { data: new Float32Array(width * height), hit: false, ms: nowMs() - start };
   }
-  if (cache && cache.has(tree)) {
-    const cached = cache.get(tree);
+  const key = cacheKey || tree;
+  if (cache && cache.has(key)) {
+    const cached = cache.get(key);
     return { data: cached, hit: true, ms: nowMs() - start };
   }
-  const data = renderFloatJob(tree, width, height);
-  if (cache) cache.set(tree, data);
+  const data = await renderFloatJob(tree, width, height);
+  if (cache && data) cache.set(key, data);
   return { data, hit: false, ms: nowMs() - start };
+}
+
+async function renderHeightmapsParallel(regions, width, height, cache) {
+  const tasks = regions.map((region) => {
+    const key = region.heightmapId ? `${region.heightmapId}:${width}x${height}` : null;
+    return { tree: region.heightmapJob, key };
+  });
+  if (!ALLOW_PARALLEL_HEIGHTMAPS) {
+    const results = [];
+    for (const task of tasks) {
+      results.push(await renderFloatJobCached(task.tree, width, height, cache, task.key));
+    }
+    return results;
+  }
+  const pool = ensureHeightmapWorkerPool();
+  if (!pool) {
+    const results = [];
+    for (const task of tasks) {
+      results.push(await renderFloatJobCached(task.tree, width, height, cache, task.key));
+    }
+    return results;
+  }
+  const promises = tasks.map((task) => dispatchHeightmapTask(pool, task.tree, width, height, task.key, cache));
+  return Promise.all(promises);
 }
 
 function renderNoise(settings, width, height) {
@@ -86,10 +131,10 @@ function renderNoise(settings, width, height) {
   return result;
 }
 
-function renderCombine(tree, width, height) {
+async function renderCombine(tree, width, height) {
   const settings = tree.settings || {};
-  const childA = renderFloatJob(tree.childA, width, height);
-  const childB = renderFloatJob(tree.childB, width, height);
+  const childA = await renderFloatJob(tree.childA, width, height);
+  const childB = await renderFloatJob(tree.childB, width, height);
   applyChildModifiers(childA, settings.childA || {});
   applyChildModifiers(childB, settings.childB || {});
   const output = new Float32Array(childA.length);
@@ -144,17 +189,13 @@ function renderBiomes(tree, width, height) {
   let hmCacheHits = 0;
   let hmCacheMiss = 0;
   let hmCacheMs = 0;
-  for (let i = 0; i < regionCount; i += 1) {
-    const region = regions[i] || {};
-    const { data, hit, ms } = renderFloatJobCached(region.heightmapJob, width, height, hmCache);
-    hmCacheMs += ms;
-    if (hit) hmCacheHits += 1;
+  const heightmapResults = await renderHeightmapsParallel(regions, width, height, hmCache);
+  heightmapResults.forEach((entry) => {
+    hmCacheMs += entry.ms;
+    if (entry.hit) hmCacheHits += 1;
     else hmCacheMiss += 1;
-    const floats = data;
-    regionHeights.push({
-      pixels: floats,
-    });
-  }
+    regionHeights.push({ pixels: entry.data });
+  });
   const tHeights = nowMs();
   perf.heightmapsMs = tHeights - tDenoise;
   perf.heightmapCacheHits = hmCacheHits;
@@ -809,6 +850,63 @@ function blendRegions(assignment, regions, width, height, heightRange) {
     buffer: floatsToBuffer(out, width, height),
     stats: { timeMs: nowMs() - tBlendStart, frontierOps, regionSeeds },
   };
+}
+
+function ensureHeightmapWorkerPool() {
+  if (heightmapWorkerPool) return heightmapWorkerPool;
+  if (!ALLOW_PARALLEL_HEIGHTMAPS) return null;
+  const size = Math.max(2, Math.min(4, typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 2 : 2));
+  const pool = [];
+  for (let i = 0; i < size; i += 1) {
+    try {
+      const worker = new Worker(self.location.href, { name: "heightmap-sub" });
+      pool.push({ worker, busy: false });
+    } catch (err) {
+      console.warn("Heightmap worker init failed", err);
+      break;
+    }
+  }
+  if (!pool.length) return null;
+  heightmapWorkerPool = { workers: pool, queue: [] };
+  return heightmapWorkerPool;
+}
+
+function dispatchHeightmapTask(pool, tree, width, height, cacheKey, cache) {
+  const cached = cacheKey ? cache?.get(cacheKey) : null;
+  if (cached) {
+    return Promise.resolve({ data: cached, hit: true, ms: 0 });
+  }
+  return new Promise((resolve) => {
+    const task = { tree, width, height, cacheKey, cache, resolve };
+    pool.queue.push(task);
+    scheduleHeightmapWork(pool);
+  });
+}
+
+function scheduleHeightmapWork(pool) {
+  const idle = pool.workers.find((w) => !w.busy);
+  if (!idle) return;
+  const task = pool.queue.shift();
+  if (!task) return;
+  idle.busy = true;
+  const jobId = `hmt-${Math.random().toString(16).slice(2)}`;
+  const start = nowMs();
+  const onMessage = (event) => {
+    const data = event.data || {};
+    if (data.jobId !== jobId) return;
+    idle.worker.removeEventListener("message", onMessage);
+    idle.busy = false;
+    if (data.floatBuffer) {
+      const arr = new Float32Array(data.floatBuffer);
+      if (task.cache && task.cacheKey) task.cache.set(task.cacheKey, arr);
+      task.resolve({ data: arr, hit: false, ms: nowMs() - start });
+    } else {
+      task.resolve({ data: new Float32Array(task.width * task.height), hit: false, ms: nowMs() - start });
+    }
+    scheduleHeightmapWork(pool);
+  };
+  idle.worker.addEventListener("message", onMessage);
+  idle.worker.postMessage({ kind: "heightmap-render", jobId, tree: task.tree, width: task.width, height: task.height });
 }
 
 function nowMs() {
