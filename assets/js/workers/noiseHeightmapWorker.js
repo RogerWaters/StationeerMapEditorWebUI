@@ -56,6 +56,20 @@ function renderFloatJob(tree, width, height) {
   return result.data;
 }
 
+function renderFloatJobCached(tree, width, height, cache) {
+  const start = nowMs();
+  if (!tree) {
+    return { data: new Float32Array(width * height), hit: false, ms: nowMs() - start };
+  }
+  if (cache && cache.has(tree)) {
+    const cached = cache.get(tree);
+    return { data: cached, hit: true, ms: nowMs() - start };
+  }
+  const data = renderFloatJob(tree, width, height);
+  if (cache) cache.set(tree, data);
+  return { data, hit: false, ms: nowMs() - start };
+}
+
 function renderNoise(settings, width, height) {
   configureNoise(settings);
   const result = new Float32Array(width * height);
@@ -126,21 +140,26 @@ function renderBiomes(tree, width, height) {
   const tDenoise = nowMs();
   perf.denoiseMs = tDenoise - tAssign;
   const regionHeights = [];
+  const hmCache = new Map();
+  let hmCacheHits = 0;
+  let hmCacheMiss = 0;
+  let hmCacheMs = 0;
   for (let i = 0; i < regionCount; i += 1) {
     const region = regions[i] || {};
-    let floats = new Float32Array(width * height);
-    if (region.heightmapJob) {
-      floats = renderFloatJob(region.heightmapJob, width, height);
-      if (!floats || floats.length !== width * height) {
-        floats = new Float32Array(width * height);
-      }
-    }
+    const { data, hit, ms } = renderFloatJobCached(region.heightmapJob, width, height, hmCache);
+    hmCacheMs += ms;
+    if (hit) hmCacheHits += 1;
+    else hmCacheMiss += 1;
+    const floats = data;
     regionHeights.push({
       pixels: floats,
     });
   }
   const tHeights = nowMs();
   perf.heightmapsMs = tHeights - tDenoise;
+  perf.heightmapCacheHits = hmCacheHits;
+  perf.heightmapCacheMiss = hmCacheMiss;
+  perf.heightmapCacheMs = hmCacheMs;
   const blendHeightRange = Math.max(0, Number.parseFloat(tree.blendHeightRange) || 0);
   const { buffer: output, stats: blendStats } = blendRegions(assignment, regionHeights, width, height, blendHeightRange);
   const tEnd = nowMs();
@@ -710,46 +729,56 @@ function blendRegions(assignment, regions, width, height, heightRange) {
     return floatsToBuffer(out, width, height);
   }
 
-  const dist = new Uint16Array(size);
-  const inQueue = new Uint8Array(size);
-  const queue = new Int32Array(size);
-
-  for (let region = 0; region < regionCount; region += 1) {
-    dist.fill(0xffff);
-    inQueue.fill(0);
-    let head = 0;
-    let tail = 0;
-
-    // Seed neighbors of this region (distance 1)
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const centerIdx = idx(x, y);
-        if (assignment[centerIdx] !== region) continue;
-        const h = clamp01(regions[region]?.pixels?.[centerIdx] ?? 0);
-        // already captured as own region (weight 1)
-        for (let n = 0; n < NEIGHBORS.length; n += 1) {
-          const nx = x + NEIGHBORS[n].dx;
-          const ny = y + NEIGHBORS[n].dy;
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          const nIdx = idx(nx, ny);
-          if (assignment[nIdx] === region) continue;
-          if (dist[nIdx] > 1) {
-            dist[nIdx] = 1;
-            queue[tail++] = nIdx;
-            inQueue[nIdx] = 1;
-            regionSeeds += 1;
-          }
-        }
+  // Precompute boundary seeds once
+  const seedsByRegion = Array.from({ length: regionCount }, () => []);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const centerIdx = idx(x, y);
+      const region = assignment[centerIdx];
+      // Check only right/down to avoid duplicates
+      const right = x + 1 < width ? assignment[centerIdx + 1] : region;
+      const down = y + 1 < height ? assignment[centerIdx + width] : region;
+      if (right !== region) {
+        seedsByRegion[region].push(centerIdx + 1);
+        seedsByRegion[right].push(centerIdx);
+      }
+      if (down !== region) {
+        seedsByRegion[region].push(centerIdx + width);
+        seedsByRegion[down].push(centerIdx);
       }
     }
+  }
 
-    // BFS outward, limited by range
+  const dist = new Uint16Array(size);
+  const stamp = new Uint16Array(size);
+  const queue = new Int32Array(size);
+  let gen = 1;
+
+  for (let region = 0; region < regionCount; region += 1) {
+    const seeds = seedsByRegion[region];
+    if (!seeds || seeds.length === 0) continue;
+    let head = 0;
+    let tail = 0;
+    gen += 1;
+    if (gen === 0xffff) {
+      stamp.fill(0);
+      gen = 1;
+    }
+
+    for (let s = 0; s < seeds.length; s += 1) {
+      const si = seeds[s];
+      if (stamp[si] === gen && dist[si] <= 1) continue;
+      stamp[si] = gen;
+      dist[si] = 1;
+      queue[tail++] = si;
+      regionSeeds += 1;
+    }
+
     while (head < tail) {
       const current = queue[head++];
-      inQueue[current] = 0;
       const d = dist[current];
       if (d > range || d === 0xffff) continue;
-      const weight = 1 - d / range;
+      const weight = range > 0 ? 1 - d / range : 0;
       if (weight > 0) {
         const h = clamp01(regions[region]?.pixels?.[current] ?? 0);
         const candidate = h * weight;
@@ -766,12 +795,10 @@ function blendRegions(assignment, regions, width, height, heightRange) {
         const ni = idx(nx, ny);
         const nd = d + 1;
         if (nd > range) continue;
-        if (nd < dist[ni]) {
+        if (stamp[ni] !== gen || nd < dist[ni]) {
+          stamp[ni] = gen;
           dist[ni] = nd;
-          if (!inQueue[ni]) {
-            queue[tail++] = ni;
-            inQueue[ni] = 1;
-          }
+          queue[tail++] = ni;
         }
       }
       frontierOps += 1;
