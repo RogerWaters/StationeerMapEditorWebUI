@@ -2,7 +2,7 @@ import FastNoiseLite from "/vendor/FastNoiseLite.js";
 
 const noise = new FastNoiseLite();
 const IS_SUB_WORKER = typeof self !== "undefined" && self.name === "heightmap-sub";
-const ALLOW_PARALLEL_HEIGHTMAPS = !IS_SUB_WORKER && typeof Worker !== "undefined";
+const ALLOW_PARALLEL_HEIGHTMAPS = !IS_SUB_WORKER && typeof Worker !== "undefined" && typeof self !== "undefined" && self.location;
 let heightmapWorkerPool = null;
 
 // Handle dedicated heightmap render requests (used by parent worker for parallel heightmaps)
