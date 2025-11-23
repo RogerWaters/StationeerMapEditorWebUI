@@ -6,38 +6,27 @@ const IS_SUB_WORKER = typeof self !== "undefined" && self.name === "heightmap-su
 const ALLOW_PARALLEL_HEIGHTMAPS = false;
 let heightmapWorkerPool = null;
 
-// Handle messages with explicit error reporting to surface issues
+// Handle dedicated heightmap render requests (used by parent worker for parallel heightmaps)
 if (typeof self !== "undefined") {
   self.onmessage = async (event) => {
-    try {
-      const data = event.data || {};
-      if (data.kind === "heightmap-render") {
-        try {
-          const floats = await renderFloatJob(data.tree, data.width, data.height);
-          self.postMessage({ jobId: data.jobId, width: data.width, height: data.height, floatBuffer: floats.buffer }, [floats.buffer]);
-        } catch (err) {
-          self.postMessage({ jobId: data.jobId, error: err?.message || String(err) });
-        }
-        return;
-      }
-      await handleMainMessage(event);
-    } catch (err) {
+    const data = event.data || {};
+    if (data.kind === "heightmap-render") {
       try {
-        self.postMessage({ jobId: event?.data?.jobId || null, nodeId: event?.data?.nodeId || null, error: err?.message || String(err) });
-      } catch (_) {
-        // ignore postMessage failure
+        const floats = await renderFloatJob(data.tree, data.width, data.height);
+        self.postMessage({ jobId: data.jobId, width: data.width, height: data.height, floatBuffer: floats.buffer }, [floats.buffer]);
+      } catch (err) {
+        self.postMessage({ jobId: data.jobId, error: err?.message || String(err) });
       }
-      console.error("[worker][fatal]", err);
+      return;
     }
+    // Default path
+    await handleMainMessage(event);
   };
 }
 
 async function handleMainMessage(event) {
   const { jobId, nodeId, width, height, tree, mode } = event.data || {};
   if (!jobId || !nodeId || !width || !height || !tree) {
-    const msg = `Missing parameters: jobId=${jobId}, nodeId=${nodeId}, width=${width}, height=${height}, tree=${!!tree}`;
-    console.error("[worker][error]", msg);
-    self.postMessage({ jobId: jobId || null, nodeId: nodeId || null, error: msg });
     return;
   }
   try {
