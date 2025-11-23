@@ -99,12 +99,14 @@ function renderUpload(tree, width, height) {
 }
 
 function renderBiomes(tree, width, height) {
+  const tStart = nowMs();
   const continents = tree.continents || {};
   const regions = Array.isArray(tree.regions) ? tree.regions : [];
   const regionCount = Math.max(0, Math.min(64, continents.continentCount || regions.length || 0));
   if (regionCount === 0) {
     return { kind: "rgba", data: floatsToBuffer(new Float32Array(width * height).fill(0), width, height) };
   }
+  const perf = { regionCount, width, height };
   const settings = {
     method: continents.method === "inflation" ? "inflation" : "voronoi",
     continentCount: regionCount,
@@ -118,7 +120,11 @@ function renderBiomes(tree, width, height) {
     settings.method === "inflation"
       ? inflateContinents(placeSeeds(regionCount, width, height, mulberry32(settings.seed || 1)), width, height, settings, mulberry32(settings.seed || 1))
       : buildVoronoi(placeSeeds(regionCount, width, height, mulberry32(settings.seed || 1)), width, height, settings);
+  const tAssign = nowMs();
+  perf.assignmentMs = tAssign - tStart;
   const assignment = denoiseAssignment(assignmentRaw, width, height, regionCount, 1);
+  const tDenoise = nowMs();
+  perf.denoiseMs = tDenoise - tAssign;
   const regionHeights = [];
   for (let i = 0; i < regionCount; i += 1) {
     const region = regions[i] || {};
@@ -133,8 +139,17 @@ function renderBiomes(tree, width, height) {
       pixels: floats,
     });
   }
+  const tHeights = nowMs();
+  perf.heightmapsMs = tHeights - tDenoise;
   const blendHeightRange = Math.max(0, Number.parseFloat(tree.blendHeightRange) || 0);
-  const output = blendRegions(assignment, regionHeights, width, height, blendHeightRange);
+  const { buffer: output, stats: blendStats } = blendRegions(assignment, regionHeights, width, height, blendHeightRange);
+  const tEnd = nowMs();
+  perf.blendMs = blendStats.timeMs;
+  perf.totalMs = tEnd - tStart;
+  perf.blendRange = blendHeightRange;
+  perf.blendFrontierOps = blendStats.frontierOps;
+  perf.blendRegionSeeds = blendStats.regionSeeds;
+  console.log(`[preview][biomes][perf]`, JSON.stringify(perf));
   return { kind: "rgba", data: output };
 }
 
@@ -675,11 +690,14 @@ function seedFallbackCell(
 }
 
 function blendRegions(assignment, regions, width, height, heightRange) {
+  const tBlendStart = nowMs();
   const regionCount = regions.length;
   const size = width * height;
   const range = Math.max(0, Math.floor(heightRange || 0));
   const out = new Float32Array(size);
   const idx = (x, y) => y * width + x;
+  let frontierOps = 0;
+  let regionSeeds = 0;
 
   // Base: own region full influence
   for (let i = 0; i < size; i += 1) {
@@ -719,6 +737,7 @@ function blendRegions(assignment, regions, width, height, heightRange) {
             dist[nIdx] = 1;
             queue[tail++] = nIdx;
             inQueue[nIdx] = 1;
+            regionSeeds += 1;
           }
         }
       }
@@ -755,10 +774,19 @@ function blendRegions(assignment, regions, width, height, heightRange) {
           }
         }
       }
+      frontierOps += 1;
     }
   }
 
-  return floatsToBuffer(out, width, height);
+  return {
+    buffer: floatsToBuffer(out, width, height),
+    stats: { timeMs: nowMs() - tBlendStart, frontierOps, regionSeeds },
+  };
+}
+
+function nowMs() {
+  if (typeof performance !== "undefined" && performance.now) return performance.now();
+  return Date.now();
 }
 
 function findDifferentNeighbor(assignment, region, x, y, width, height) {
