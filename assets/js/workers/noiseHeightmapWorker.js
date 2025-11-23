@@ -6,6 +6,31 @@ const IS_SUB_WORKER = typeof self !== "undefined" && self.name === "heightmap-su
 const ALLOW_PARALLEL_HEIGHTMAPS = false;
 let heightmapWorkerPool = null;
 
+// Global error reporting to surface worker load/runtime issues
+if (typeof self !== "undefined") {
+  const report = (tag, detail, extra) => {
+    const msg = `${tag}: ${detail}`;
+    try {
+      self.postMessage({ jobId: null, nodeId: null, error: msg, detail: extra ? String(extra) : undefined });
+    } catch (_) {
+      // ignore postMessage failure
+    }
+    try {
+      console.error(`[worker][${tag}]`, detail, extra || "");
+    } catch (_) {
+      // ignore console failure
+    }
+  };
+  self.addEventListener("error", (e) => {
+    const detail = e?.message || e?.filename || "unknown error";
+    report("global-error", detail, e?.error || e);
+  });
+  self.addEventListener("unhandledrejection", (e) => {
+    const detail = e?.reason?.message || String(e?.reason || "unhandled rejection");
+    report("unhandled-rejection", detail, e?.reason);
+  });
+}
+
 // Handle messages with explicit error reporting to surface issues
 if (typeof self !== "undefined") {
   self.onmessage = async (event) => {
