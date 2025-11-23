@@ -89,9 +89,7 @@ export const BIOME_REGION_DEFAULTS = {
 };
 
 export const BIOME_GLOBAL_DEFAULTS = {
-  blendRadius: 32,
-  blendFeather: 0.5,
-  blendModHeightmapId: null,
+  blendHeightRange: 40, // pixels
 };
 
 export const CONTINENT_DEFAULTS = {

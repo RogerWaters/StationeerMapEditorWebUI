@@ -31,8 +31,6 @@ function heightmapOptions() {
   return opts;
 }
 
-const blendModOptions = () => heightmapOptions();
-
 export function ensureBiomesPanel() {
   const panelId = "panel-biomes";
   const workspace = webix.$$("workspaceArea");
@@ -97,42 +95,20 @@ export function ensureBiomesPanel() {
                       },
                     },
                     spacer(18),
-                    section("Blending", "Übergänge zwischen Regionen weich gestalten."),
-                    {
-                      view: "slider",
-                      id: "biomeField-blendRadius",
-                      label: "Blend Radius",
-                      labelWidth: 140,
-                      value: 32,
-                      min: 0,
-                      max: 256,
-                      on: {
-                        onChange: (value) => updateGlobalsField("blendRadius", value),
-                      },
-                    },
+                section("Blending", "Übergänge zwischen Regionen weich gestalten."),
+                    spacer(4),
                     spacer(8),
                     {
                       view: "slider",
-                      id: "biomeField-blendFeather",
-                      label: "Feather",
+                      id: "biomeField-blendHeightRange",
+                      label: "Height Blend Range",
                       labelWidth: 140,
-                      value: 0.5,
+                      value: 40,
                       min: 0,
-                      max: 1,
-                      step: 0.01,
+                      max: 512,
+                      step: 1,
                       on: {
-                        onChange: (value) => updateGlobalsField("blendFeather", value),
-                      },
-                    },
-                    spacer(8),
-                    {
-                      view: "combo",
-                      id: "biomeField-blendModHeightmapId",
-                      label: "Blend Heightmap",
-                      labelWidth: 140,
-                      options: blendModOptions(),
-                      on: {
-                        onChange: (value) => updateGlobalsField("blendModHeightmapId", value || null),
+                        onChange: (value) => updateGlobalsField("blendHeightRange", value),
                       },
                     },
                   ],
@@ -195,10 +171,10 @@ export function syncBiomesPanel() {
     heightmapField.define("options", heightmapOptions());
     heightmapField.refresh();
   }
-  const blendModField = webix.$$("biomeField-blendModHeightmapId");
-  if (blendModField) {
-    blendModField.define("options", blendModOptions());
-    blendModField.refresh();
+  const blendRangeField = webix.$$("biomeField-blendHeightRange");
+  if (blendRangeField) {
+    blendRangeField.define("max", projectState.spec.size || 512);
+    blendRangeField.refresh();
   }
   syncRegionForm();
   syncGlobalBlendFields();
@@ -222,9 +198,9 @@ function syncRegionForm() {
   };
   if (region) {
     setValue("biomeField-heightmap", region.heightmapId || "");
-    setValue("biomeField-blendRadius", region.blendRadius ?? 32);
-    setValue("biomeField-blendFeather", region.blendFeather ?? 0.5);
   }
+  const globals = getBiomeGlobals();
+  setValue("biomeField-blendHeightRange", globals.blendHeightRange ?? 40);
 }
 
 function updateRegionField(key, value) {
@@ -238,7 +214,7 @@ function updateRegionField(key, value) {
   if (!regions[index]) return;
   const next = updateBiomeRegion(index, { [key]: value });
   if (list && next) {
-    const label = key === "heightmapId" ? getHeightmapLabel(value) : list.getItem(selectedId).heightmapLabel;
+    const label = key === "heightmapId" ? getHeightmapLabel(value) : item.heightmapLabel;
     const updated = { ...item, heightmapLabel: label };
     list.updateItem(item.id, updated);
   }
@@ -260,9 +236,7 @@ function syncGlobalBlendFields() {
     view.setValue(value);
     view.unblockEvent();
   };
-  setValue("biomeField-blendRadius", globals.blendRadius ?? 32);
-  setValue("biomeField-blendFeather", globals.blendFeather ?? 0.5);
-  setValue("biomeField-blendModHeightmapId", globals.blendModHeightmapId || "");
+  setValue("biomeField-blendHeightRange", globals.blendHeightRange ?? 40);
 }
 
 function getHeightmapLabel(id) {

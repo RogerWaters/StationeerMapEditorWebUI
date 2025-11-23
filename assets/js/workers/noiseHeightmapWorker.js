@@ -114,10 +114,11 @@ function renderBiomes(tree, width, height) {
     inflationIrregularity: clamp01(continents.inflationIrregularity ?? 0.35),
     inflationDrift: clamp01(continents.inflationDrift ?? 0.25),
   };
-  const assignment =
+  const assignmentRaw =
     settings.method === "inflation"
       ? inflateContinents(placeSeeds(regionCount, width, height, mulberry32(settings.seed || 1)), width, height, settings, mulberry32(settings.seed || 1))
       : buildVoronoi(placeSeeds(regionCount, width, height, mulberry32(settings.seed || 1)), width, height, settings);
+  const assignment = denoiseAssignment(assignmentRaw, width, height, regionCount, 1);
   const regionHeights = [];
   for (let i = 0; i < regionCount; i += 1) {
     const region = regions[i] || {};
@@ -130,12 +131,10 @@ function renderBiomes(tree, width, height) {
     }
     regionHeights.push({
       pixels: floats,
-      blendRadius: clampInt(region.blendRadius, 0, 1024, 32),
-      blendFeather: clamp01(region.blendFeather ?? 0.5),
     });
   }
-  const modulation = tree.modHeightmapJob ? renderFloatJob(tree.modHeightmapJob, width, height) : null;
-  const output = blendRegions(assignment, regionHeights, width, height, modulation);
+  const blendHeightRange = Math.max(0, Number.parseFloat(tree.blendHeightRange) || 0);
+  const output = blendRegions(assignment, regionHeights, width, height, blendHeightRange);
   return { kind: "rgba", data: output };
 }
 
@@ -675,95 +674,94 @@ function seedFallbackCell(
   return true;
 }
 
-function blendRegions(assignment, regions, width, height, modulation) {
-  const count = regions.length;
+function blendRegions(assignment, regions, width, height, heightRange) {
+  const regionCount = regions.length;
   const size = width * height;
-  const dist = new Uint16Array(size);
-  dist.fill(0xffff);
-  const other = new Int16Array(size).fill(-1);
-  const queue = new Int32Array(size);
-  let head = 0;
-  let tail = 0;
+  const range = Math.max(0, Math.floor(heightRange || 0));
+  const out = new Float32Array(size);
   const idx = (x, y) => y * width + x;
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const centerIdx = idx(x, y);
-      const region = assignment[centerIdx];
-      const neighbor = findDifferentNeighbor(assignment, region, x, y, width, height);
-      if (neighbor === -1) continue;
-      dist[centerIdx] = 0;
-      other[centerIdx] = neighbor;
-      queue[tail++] = centerIdx;
-    }
-  }
-
-  while (head < tail) {
-    const current = queue[head++];
-    const region = assignment[current];
-    const settings = regions[region] || {};
-    const radius = settings.blendRadius || 0;
-    const currentDist = dist[current];
-    if (currentDist + 1 > radius) continue;
-    const cx = current % width;
-    const cy = Math.floor(current / width);
-    for (let i = 0; i < NEIGHBORS.length; i += 1) {
-      const nx = cx + NEIGHBORS[i].dx;
-      const ny = cy + NEIGHBORS[i].dy;
-      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-      const nIdx = idx(nx, ny);
-      if (assignment[nIdx] !== region) continue;
-      if (dist[nIdx] <= currentDist + 1) continue;
-      dist[nIdx] = currentDist + 1;
-      other[nIdx] = other[current];
-      queue[tail++] = nIdx;
-    }
-  }
-
-  const out = new Uint8ClampedArray(size * 4);
-  let ptr = 0;
+  // Base: own region full influence
   for (let i = 0; i < size; i += 1) {
     const region = assignment[i];
-    const regSettings = regions[region] || {};
-    const primary = regSettings.pixels?.[i] ?? 0;
-    const radius = regSettings.blendRadius || 0;
-    const otherRegion = other[i];
-    let value = primary;
-    if (radius > 0 && otherRegion >= 0 && otherRegion < count) {
-      const d = dist[i];
-      if (d < radius) {
-        const secondary = regions[otherRegion]?.pixels?.[i] ?? primary;
-        const m = modulation ? clamp01(modulation[i] || 0.5) : 0.5;
-        const radiusScale = Math.max(0.35, 0.5 + m); // scale radius between ~0.35x und 1.5x
-        const effectiveRadius = Math.max(1, radius * radiusScale);
-        const t = d / effectiveRadius;
-        const feather = clamp01(regSettings.blendFeather ?? 0.5);
-        let w = smoothStep(customFeather(t, feather));
-        value = secondary * (1 - w) + primary * w;
+    const primary = clamp01(regions[region]?.pixels?.[i] ?? 0);
+    out[i] = primary;
+  }
+
+  if (range === 0) {
+    return floatsToBuffer(out, width, height);
+  }
+
+  const dist = new Uint16Array(size);
+  const inQueue = new Uint8Array(size);
+  const queue = new Int32Array(size);
+
+  for (let region = 0; region < regionCount; region += 1) {
+    dist.fill(0xffff);
+    inQueue.fill(0);
+    let head = 0;
+    let tail = 0;
+
+    // Seed neighbors of this region (distance 1)
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const centerIdx = idx(x, y);
+        if (assignment[centerIdx] !== region) continue;
+        const h = clamp01(regions[region]?.pixels?.[centerIdx] ?? 0);
+        // already captured as own region (weight 1)
+        for (let n = 0; n < NEIGHBORS.length; n += 1) {
+          const nx = x + NEIGHBORS[n].dx;
+          const ny = y + NEIGHBORS[n].dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const nIdx = idx(nx, ny);
+          if (assignment[nIdx] === region) continue;
+          if (dist[nIdx] > 1) {
+            dist[nIdx] = 1;
+            queue[tail++] = nIdx;
+            inQueue[nIdx] = 1;
+          }
+        }
       }
     }
-    const c = Math.round(clamp01(value) * 255);
-    out[ptr++] = c;
-    out[ptr++] = c;
-    out[ptr++] = c;
-    out[ptr++] = 255;
+
+    // BFS outward, limited by range
+    while (head < tail) {
+      const current = queue[head++];
+      inQueue[current] = 0;
+      const d = dist[current];
+      if (d > range || d === 0xffff) continue;
+      const weight = 1 - d / range;
+      if (weight > 0) {
+        const h = clamp01(regions[region]?.pixels?.[current] ?? 0);
+        const candidate = h * weight;
+        if (candidate > out[current]) {
+          out[current] = candidate;
+        }
+      }
+      const cx = current % width;
+      const cy = Math.floor(current / width);
+      for (let n = 0; n < NEIGHBORS.length; n += 1) {
+        const nx = cx + NEIGHBORS[n].dx;
+        const ny = cy + NEIGHBORS[n].dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const ni = idx(nx, ny);
+        const nd = d + 1;
+        if (nd > range) continue;
+        if (nd < dist[ni]) {
+          dist[ni] = nd;
+          if (!inQueue[ni]) {
+            queue[tail++] = ni;
+            inQueue[ni] = 1;
+          }
+        }
+      }
+    }
   }
-  return out;
-}
 
-function customFeather(t, feather) {
-  const f = clamp01(feather);
-  const exponent = 1 + (1 - f) * 2;
-  return Math.pow(clamp01(t), exponent);
-}
-
-function smoothStep(t) {
-  const x = clamp01(t);
-  return x * x * (3 - 2 * x);
+  return floatsToBuffer(out, width, height);
 }
 
 function findDifferentNeighbor(assignment, region, x, y, width, height) {
-  const idx = y * width + x;
   for (let i = 0; i < NEIGHBORS.length; i += 1) {
     const nx = x + NEIGHBORS[i].dx;
     const ny = y + NEIGHBORS[i].dy;
@@ -775,6 +773,45 @@ function findDifferentNeighbor(assignment, region, x, y, width, height) {
   }
   return -1;
 }
+
+function denoiseAssignment(assignment, width, height, regionCount, iterations = 1) {
+  if (!assignment || iterations <= 0 || regionCount <= 1) return assignment;
+  let current = assignment;
+  const neighborOffsets = NEIGHBORS.map((n) => n.dx + n.dy * width);
+  const counts = new Uint16Array(regionCount);
+  for (let iter = 0; iter < iterations; iter += 1) {
+    const next = new Int16Array(current.length);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const idx = y * width + x;
+        const center = current[idx];
+        counts.fill(0);
+        counts[center] += 1;
+        for (let n = 0; n < neighborOffsets.length; n += 1) {
+          const nx = x + NEIGHBORS[n].dx;
+          const ny = y + NEIGHBORS[n].dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const region = current[idx + neighborOffsets[n]];
+          if (region >= 0 && region < regionCount) counts[region] += 1;
+        }
+        let bestRegion = center;
+        let bestCount = counts[center];
+        for (let r = 0; r < regionCount; r += 1) {
+          const c = counts[r];
+          if (c > bestCount) {
+            bestCount = c;
+            bestRegion = r;
+          }
+        }
+        // Only change if clear majority (>=5 of 9) to avoid blurring edges too much
+        next[idx] = bestCount >= 5 ? bestRegion : center;
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
 function buildPalette(count, seed) {
   const palette = [];
   for (let i = 0; i < count; i += 1) {

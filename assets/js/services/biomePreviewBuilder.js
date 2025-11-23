@@ -6,13 +6,6 @@ export function buildBiomesPreviewJob() {
   const regionCount = continents.continentCount || 0;
   const regions = ensureBiomeRegions(regionCount);
   const globals = getBiomeGlobals();
-  let modJob = null;
-  if (globals.blendModHeightmapId) {
-    const job = buildPreviewTree(globals.blendModHeightmapId);
-    if (job.ok) {
-      modJob = job.job;
-    }
-  }
   const regionJobs = regions.map((region) => {
     let heightmapJob = null;
     if (region.heightmapId) {
@@ -25,10 +18,6 @@ export function buildBiomesPreviewJob() {
       name: region.name || "",
       heightmapId: region.heightmapId || null,
       heightmapJob,
-      blendRadius: coerce(globals.blendRadius, 32),
-      blendFeather: clamp01(globals.blendFeather, 0.5),
-      blendNoise: clamp01(globals.blendNoise, 0.15),
-      blendNoiseScale: coerce(globals.blendNoiseScale, 0.5),
     };
   });
   return {
@@ -37,7 +26,7 @@ export function buildBiomesPreviewJob() {
       type: "biomes",
       continents,
       regions: regionJobs,
-      modHeightmapJob: modJob,
+      blendHeightRange: coercePositive(globals.blendHeightRange, 40),
     },
   };
 }
@@ -51,4 +40,10 @@ function clamp01(value, fallback) {
 function coerce(value, fallback) {
   const num = parseFloat(value);
   return Number.isFinite(num) ? num : fallback;
+}
+
+function coercePositive(value, fallback) {
+  const num = parseFloat(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(0, num);
 }
